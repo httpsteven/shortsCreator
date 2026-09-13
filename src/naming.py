@@ -59,6 +59,15 @@ def normalize_key(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", value.lower())
 
 
+_EPISODE_MARKER = re.compile(r"[sS](\d{1,2})[eE](\d{1,3})")
+
+
+def episode_marker(value: str) -> tuple[int, int] | None:
+    """The (season, episode) a key refers to, or None for a movie."""
+    match = _EPISODE_MARKER.search(value)
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
 def find_key(wanted: str, available: list[str]) -> str | None:
     """
     Resolve a lookup key against the keys actually present in quotes.json.
@@ -67,6 +76,16 @@ def find_key(wanted: str, available: list[str]) -> str | None:
       1. exact
       2. normalized exact  (punctuation/spacing drift)
       3. normalized fuzzy  (wording drift, >= FUZZY_KEY_THRESHOLD)
+
+    The fuzzy pass is restricted to candidates with the SAME season and
+    episode. Without that it is dangerously loose on television: the show name
+    is most of the string, so the numbers barely move the ratio —
+    "Malcolm in the Middle - S04E01 - Zoo" scores 0.857 against
+    "Malcolm in the Middle - S01E03 - Pilot", over the 0.85 threshold, and one
+    episode's quotes get applied to another. Fuzzy matching is meant to absorb
+    drift in the TITLE, never in the numbering, which is exact by construction.
+
+    A movie key likewise only fuzzy-matches other movie keys.
 
     Returns the matching key as written in the file, or None.
     """
@@ -79,9 +98,16 @@ def find_key(wanted: str, available: list[str]) -> str | None:
     if target in normalized:
         return normalized[target]
 
+    wanted_marker = episode_marker(wanted)
+    candidates = {
+        candidate_norm: original
+        for candidate_norm, original in normalized.items()
+        if episode_marker(original) == wanted_marker
+    }
+
     best_key: str | None = None
     best_ratio = 0.0
-    for candidate_norm, original in normalized.items():
+    for candidate_norm, original in candidates.items():
         ratio = difflib.SequenceMatcher(None, target, candidate_norm).ratio()
         if ratio > best_ratio:
             best_ratio, best_key = ratio, original

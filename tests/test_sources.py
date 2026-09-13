@@ -205,3 +205,28 @@ def test_missing_roots_are_reported(tmp_path: Path) -> None:
     """
     source = FilesystemSource(tmp_path / "nope", None)
     assert source.missing_roots() == [tmp_path / "nope"]
+
+
+def test_fuzzy_key_never_crosses_episodes() -> None:
+    """
+    The show name is most of the string, so the numbering barely moves the
+    similarity ratio: S04E01 scores 0.857 against S01E01, over the 0.85
+    threshold. Fuzzy matching absorbs drift in the TITLE; the numbering is
+    exact by construction and must be treated that way, or one episode's
+    quotes get silently applied to another.
+    """
+    available = ["Malcolm in the Middle - S01E01 - Pilot"]
+
+    assert find_key("Malcolm in the Middle - S04E01 - Zoo", available) is None
+    assert find_key("Malcolm in the Middle - S01E02 - Red Dress", available) is None
+
+    # The same episode with a drifted title still resolves.
+    assert find_key("Malcolm in the Middle - S01E01 - The Pilot", available) == available[0]
+
+
+def test_fuzzy_key_does_not_cross_movies_and_episodes() -> None:
+    episodes = ["Malcolm in the Middle - S01E01 - Pilot"]
+    movies = ["Malcolm in the Middle"]
+
+    assert find_key("Malcolm in the Middle", episodes) is None
+    assert find_key("Malcolm in the Middle - S01E01 - Pilot", movies) is None
