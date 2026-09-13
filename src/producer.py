@@ -20,7 +20,7 @@ from src.clip_extractor import plan_window
 from src.config import Config
 from src.media_probe import ProbeError, probe
 from src.quote_finder import Candidate, QuoteStore
-from src.recap import plan_recap
+from src.recap import Moment, plan_recap
 from src.segmenter import Part, plan_series
 from src.sources.base import MediaItem
 from src.state import ClipRecord, State, clip_id, series_id
@@ -300,9 +300,22 @@ def _produce_recap(
     """
     One clip that cuts between several moments — a rundown rather than a joke.
     """
+    moments = [
+        Moment(
+            source=item.path,
+            label=item.display_name,
+            match=match,
+            runtime=media_duration,
+        )
+        for match in accepted
+    ]
+
     plan = plan_recap(
-        accepted, media_duration, config,
-        target_duration=target_duration, segments=segments,
+        moments, config,
+        runtime=media_duration,
+        target_duration=target_duration,
+        segments=segments,
+        spread="beats",
     )
     if not plan.ok:
         outcome.skipped = plan.reason
@@ -342,7 +355,7 @@ def _produce_recap(
     ]
 
     ok, message = render_recap(
-        item.path, plan.segments, cues_by_segment, destination, config,
+        plan.segments, cues_by_segment, destination, config,
         ass_path=config.cache_dir / "ass" / f"{item.slug}.recap.ass",
         gate=gate,
     )

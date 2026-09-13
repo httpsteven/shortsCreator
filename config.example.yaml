@@ -148,6 +148,14 @@ recap:
   segment_min: 4              # below this a segment is a flash, not a moment
   min_separation: 20          # moments closer than this are near-duplicates
 
+  # A recap picks the best moment from each ACT rather than the best N overall.
+  # Ranking purely by score clusters wherever the strongest lines happen to
+  # fall — usually the middle, since that is where most of an episode is — and
+  # a rundown that skips the opening and the ending is not a rundown.
+  #
+  # Compilations always rank by score instead: timestamps from different
+  # episodes are not comparable.
+
 whisper:
   enabled: true
   # distil-large-v3 is English-only, near large-v3 accuracy, far cheaper. Better

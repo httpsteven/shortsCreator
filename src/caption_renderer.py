@@ -326,7 +326,6 @@ def build_recap_filter(
 
 
 def render_recap(
-    source: Path,
     segments,
     cues_by_segment: list[list[Cue]],
     destination: Path,
@@ -336,7 +335,11 @@ def render_recap(
     gate=None,
 ) -> tuple[bool, str]:
     """
-    Render a recap: one file, several moments, one caption track.
+    Render a recap or compilation: one file, several moments, one caption track.
+
+    Each segment carries its own source, so the moments can come from one
+    episode (a rundown) or from twenty different ones (a compilation) with no
+    difference here.
 
     `cues_by_segment` holds each segment's cues already rebased to that
     segment's own start. They are shifted again here by the segment's offset in
@@ -365,14 +368,19 @@ def render_recap(
         build_ass(shifted, config, clip_duration=total), encoding="utf-8"
     )
 
-    with_audio = has_audio_stream(source)
+    # Every source must have audio or the concat graph can't join them — one
+    # silent episode in a compilation would otherwise fail the whole render
+    # with an unhelpful filter error. Dropping audio for all of them is the
+    # graceful answer.
+    sources = {segment.source for segment in segments}
+    with_audio = all(has_audio_stream(path) for path in sources)
 
     command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
     for segment in segments:
         command += [
             "-ss", f"{segment.window.start:.3f}",
             "-t", f"{segment.duration:.3f}",
-            "-i", str(source),
+            "-i", str(segment.source),
         ]
 
     command += [

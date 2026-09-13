@@ -413,6 +413,169 @@ def cmd_worker(config: Config, args: argparse.Namespace) -> int:
 
 
 
+def cmd_compile(config: Config, args: argparse.Namespace) -> int:
+    """
+    Pool moments from MANY episodes into one clip.
+
+    "Top ten cold opens", "every time Dewey wins". Where a recap rounds up one
+    episode, this rounds up a show — so by default it takes the single best
+    moment per episode, because ten moments from one episode is a recap, not a
+    top ten.
+    """
+    from src.caption_renderer import render_recap
+    from src.media_probe import ProbeError, probe
+    from src.recap import Moment, plan_recap
+    from src.state import ClipRecord, clip_id
+    from src.subtitle_source import HUMAN_REASONS, acquire
+    from src.subtitle_utils import cues_in_window, find_matches, load_cues
+
+    items = collect_items(config, args)
+    if not items:
+        print("  No media matched.")
+        return 1
+
+    try:
+        store = QuoteStore.load(config.quotes.path)
+    except QuotesError as exc:
+        print(f"Quotes error: {exc}", file=sys.stderr)
+        return 2
+
+    database = open_database(config)
+    gate = ViewerGate(config, database)
+    if args.ignore_viewers:
+        gate.force_open()
+
+    transcriber = build_transcriber(config, quiet=args.quiet)
+
+    moments: list[Moment] = []
+    cues_by_source: dict[Path, list] = {}
+    scanned = 0
+
+    print(f"  Scanning {len(items)} item(s) for moments...")
+    for item in items:
+        if not store.candidates_for(item.lookup_key, args.category):
+            continue
+        scanned += 1
+
+        try:
+            probed = probe(item.path)
+        except ProbeError as exc:
+            print(f"  [skip] {item.display_name} — {exc}")
+            continue
+
+        subtitles = acquire(probed, config, transcriber=transcriber)
+        if not subtitles.ok:
+            print(
+                f"  [skip] {item.display_name} — "
+                f"{HUMAN_REASONS.get(subtitles.reason, subtitles.reason)}"
+            )
+            continue
+
+        cues = load_cues(subtitles.srt_path)
+        candidates = store.candidates_for(item.lookup_key, args.category)
+        accepted, _rejected = find_matches(
+            cues,
+            [c.quote for c in candidates],
+            threshold=config.matching.threshold,
+            window_max_cues=config.matching.window_max_cues,
+        )
+
+        # A time window is how you target the cold open — everything before the
+        # theme song — without needing to detect the theme itself.
+        if args.after is not None:
+            accepted = [m for m in accepted if m.start >= args.after]
+        if args.before is not None:
+            accepted = [m for m in accepted if m.start <= args.before]
+
+        if not accepted:
+            continue
+
+        cues_by_source[item.path] = cues
+        for match in sorted(accepted, key=lambda m: -m.score)[: args.per_item]:
+            moments.append(
+                Moment(
+                    source=item.path,
+                    label=item.display_name,
+                    match=match,
+                    runtime=probed.duration,
+                )
+            )
+        print(f"  [take] {item.display_name} — {len(accepted)} candidate(s)")
+
+    if not moments:
+        print(f"\n  No moments found across {scanned} item(s) with quotes.")
+        return 1
+
+    plan = plan_recap(
+        moments, config,
+        target_duration=args.duration,
+        segments=args.segments,
+        # Timestamps from different episodes are not comparable, so ranking by
+        # score is the only sensible order here — and suppression, which exists
+        # to stop two moments from ONE scene, would wrongly collapse moments
+        # that merely happen to sit at the same minute of different episodes.
+        spread="score",
+        suppress=False,
+    )
+    if not plan.ok:
+        print(f"\n  {plan.reason}")
+        return 1
+
+    print(f"\n  {len(plan.segments)} moment(s), {plan.duration:.1f}s")
+    for segment in plan.segments:
+        print(
+            f"    {segment.offset:5.1f}s  {segment.moment.label[:44]:<44} "
+            f"score {segment.match.score:3.0f}"
+        )
+
+    if args.dry_run:
+        print("\n  Dry run — nothing rendered.")
+        return 0
+
+    destination = config.clips_dir / f"{args.out}.mp4"
+    cues_by_segment = [
+        cues_in_window(
+            cues_by_source[segment.source], segment.window.start, segment.window.end
+        )
+        for segment in plan.segments
+    ]
+
+    ok, message = render_recap(
+        plan.segments, cues_by_segment, destination, config,
+        ass_path=config.cache_dir / "ass" / f"{args.out}.ass",
+        gate=gate,
+    )
+    if not ok:
+        print(f"\n  Render failed: {message}", file=sys.stderr)
+        return 1
+
+    if database is not None:
+        record = ClipRecord(
+            clip_id=clip_id(destination, args.out),
+            source=str(plan.segments[0].source),
+            lookup_key=args.out,
+            quote=" / ".join(s.moment.label[:30] for s in plan.segments[:4]),
+            category=args.category,
+            start=0.0,
+            end=round(plan.duration, 3),
+            score=round(
+                sum(s.match.score for s in plan.segments) / len(plan.segments), 1
+            ),
+            output=str(destination),
+        )
+        from src.caption_renderer import extract_thumbnail
+
+        thumbnail = config.thumbs_dir / f"{args.out}.jpg"
+        if extract_thumbnail(destination, thumbnail):
+            record.thumbnail = str(thumbnail)
+        database.record_short(record)
+        database.close()
+
+    print(f"\n  Wrote {destination}")
+    return 0
+
+
+
 # --------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------
@@ -490,6 +653,29 @@ def build_parser() -> argparse.ArgumentParser:
                         help="seconds between queue checks")
     worker.add_argument("--quiet", action="store_true")
     worker.set_defaults(handler=cmd_worker)
+
+    compile_ = sub.add_parser(
+        "compile", help="pool moments from many episodes into one clip"
+    )
+    add_filters(compile_)
+    compile_.add_argument("--out", default="Compilation",
+                          help="output filename, without extension")
+    compile_.add_argument("--category", help="pull from one category bucket")
+    compile_.add_argument("--duration", type=float, default=90.0,
+                          help="target total length in seconds")
+    compile_.add_argument("--segments", type=int,
+                          help="how many moments to include")
+    compile_.add_argument("--per-item", type=int, default=1,
+                          help="moments to take from each episode (default 1)")
+    compile_.add_argument("--after", type=float,
+                          help="ignore moments before this second")
+    compile_.add_argument("--before", type=float,
+                          help="ignore moments after this second — "
+                               "e.g. --before 90 for cold opens")
+    compile_.add_argument("--dry-run", action="store_true")
+    compile_.add_argument("--quiet", action="store_true")
+    compile_.add_argument("--ignore-viewers", action="store_true")
+    compile_.set_defaults(handler=cmd_compile)
 
     return parser
 
