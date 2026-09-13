@@ -5,26 +5,27 @@
 #   sudo systemctl enable --now shorts-worker
 #   journalctl -u shorts-worker -f
 #
-# Edit User, Group and the three paths below to match your box.
+# Paths below match steven-plex. Change User/Group and the paths if you
+# deploy somewhere else.
 
 [Unit]
 Description=shortsCreator worker
-Documentation=file:///opt/shortsCreator/README.md
+Documentation=file:///home/shortsCreator/README.md
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=CHANGEME
-Group=CHANGEME
-WorkingDirectory=/opt/shortsCreator
-ExecStart=/opt/shortsCreator/.venv/bin/python -m src.pipeline \
-          --config /opt/shortsCreator/config.yaml worker
+User=httpsteven
+Group=httpsteven
+WorkingDirectory=/home/shortsCreator
+ExecStart=/home/shortsCreator/.venv/bin/python -m src.pipeline \
+          --config /home/shortsCreator/config.yaml worker
 
 # faster-whisper downloads models under $HOME on first run. Without HOME set,
 # systemd gives the service /, the download fails, and the failure looks like a
 # CUDA problem rather than a permissions one.
-Environment=HOME=/home/CHANGEME
+Environment=HOME=/home/httpsteven
 Environment=PYTHONUNBUFFERED=1
 
 # Be a polite neighbour: this machine is also the Plex server. The worker sets
@@ -44,7 +45,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=read-only
-ReadWritePaths=/srv/shorts_output /opt/shortsCreator /home/CHANGEME/.cache
+ReadWritePaths=/srv/shorts_output /home/shortsCreator /home/httpsteven/.cache
 
 StandardOutput=journal
 StandardError=journal

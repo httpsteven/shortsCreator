@@ -13,6 +13,29 @@ network between them.
 Work through this in order. Steps 1–5 each end in a check — if a check fails,
 fix it before moving on, because every later step assumes it passed.
 
+## Verified environment
+
+Checked on `steven-plex`, 2026-09-12 — if yours differs, step 1 tells you.
+
+| | |
+|---|---|
+| OS / Python | Ubuntu, Python 3.12.3 |
+| ffmpeg | 6.1.1 with `--enable-libass`, `--enable-libx264` |
+| NVENC | `h264_nvenc` available |
+| GPU | GTX 1080, driver 580.173.02, 8 GB |
+| Media | `/srv/local_movies`, `/srv/local_tvshows` (mergerfs pool, 6.8 TB free) |
+| Dashboard | `/home/homelab/HomeLab`, `data/` owned by `httpsteven` (1000:1000) |
+
+Two notes specific to this box:
+
+- **Ignore `av1_nvenc`.** ffmpeg lists it, but that's a build flag, not a
+  capability — Pascal encodes H.264 and HEVC only, so AV1 fails at runtime.
+  `h264_nvenc` is correct, and YouTube wants H.264 anyway.
+- **`/srv` is mergerfs.** Fine for reading media and writing clips. The one
+  thing to watch: if mergerfs remounts while the dashboard container is running,
+  the container keeps the old mount and sees an empty directory — clips would
+  404 while the database rows look perfectly healthy.
+
 ---
 
 ## 0. Three things that will bite you
@@ -68,25 +91,15 @@ What you need to see:
 
 ## 2. Get the code onto the box
 
-From your Mac:
-
 ```bash
-cd /path/to/shortsCreator
-
-rsync -av --delete \
-  --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' \
-  --exclude 'tests/fixtures/media' --exclude 'output' \
-  ./ YOU@MEDIABOX:/opt/shortsCreator/
+cd /home
+sudo git clone https://github.com/httpsteven/shortsCreator.git
+sudo chown -R $USER:$USER /home/shortsCreator
 ```
 
-(If you'd rather use git, `git init && git add -A && git commit` here and clone
-there — nothing in the code cares which.)
-
-Make sure your user owns it:
-
-```bash
-ssh YOU@MEDIABOX 'sudo chown -R $USER:$USER /opt/shortsCreator'
-```
+That `chown` matters: `/home` needs `sudo` to write, so the clone lands
+root-owned, while the systemd worker runs as your user. A root-owned checkout
+plus a user-run service is a confusing permissions failure later.
 
 ---
 
@@ -95,7 +108,7 @@ ssh YOU@MEDIABOX 'sudo chown -R $USER:$USER /opt/shortsCreator'
 On the box:
 
 ```bash
-cd /opt/shortsCreator
+cd /home/shortsCreator
 python3.12 -m venv .venv          # or python3.13 / python3.11
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install -r requirements.txt
@@ -125,7 +138,7 @@ works regardless.
 ## 4. Configure
 
 ```bash
-cd /opt/shortsCreator
+cd /home/shortsCreator
 cp config.example.yaml config.yaml
 cp categories.example.yaml categories.yaml
 nano config.yaml
@@ -143,11 +156,11 @@ output:
 
 database:
   # Point this at your Dashboard checkout's data directory.
-  path: /path/to/Dashboard/data/shorts.db
+  path: /home/homelab/HomeLab/data/shorts.db
 
 quotes:
-  path: /opt/shortsCreator/quotes.json
-  categories: /opt/shortsCreator/categories.yaml
+  path: /home/shortsCreator/quotes.json
+  categories: /home/shortsCreator/categories.yaml
 ```
 
 Create the output directory and make sure you own it:
@@ -286,7 +299,7 @@ and one side or the other hits "attempt to write a readonly database".
 Make sure the data directory is yours:
 
 ```bash
-cd /path/to/Dashboard
+cd /home/homelab/HomeLab
 sudo chown -R $(id -u):$(id -g) data/
 ```
 
@@ -310,7 +323,7 @@ clips, and playing one should seek properly.
 This is what lets you queue work from the dashboard.
 
 ```bash
-sudo cp /opt/shortsCreator/deploy/shorts-worker.service /etc/systemd/system/
+sudo cp /home/shortsCreator/deploy/shorts-worker.service /etc/systemd/system/
 sudo nano /etc/systemd/system/shorts-worker.service   # replace CHANGEME
 sudo systemctl daemon-reload
 sudo systemctl enable --now shorts-worker
