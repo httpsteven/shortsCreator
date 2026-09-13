@@ -21,14 +21,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from src.config import Config
-from src.media_probe import MediaProbe, ProbeError, probe
+from src.media_probe import MediaProbe, ProbeError, probe, select_stream
 from src.sources.base import MediaItem
 from src.subtitle_source import (
     HUMAN_REASONS,
     Provenance,
     Reason,
-    acquire,
+    Validation,
+    convert_sidecar,
     diagnose_level1,
+    sample_track,
+    validate_srt,
 )
 
 # Rough transcription cost, as a multiple of real time. distil-large-v3 in int8
@@ -106,17 +109,75 @@ def audit_item(item: MediaItem, config: Config, *, deep: bool) -> AuditRow:
     if not deep:
         return row
 
-    # allow_whisper=False: the audit reports what transcription WOULD cost. It
-    # does not silently spend an hour of GPU time while you're looking at a
-    # progress bar.
-    acquired = acquire(result, config, allow_whisper=False)
-    row.level2 = acquired.reason
-    row.provenance = acquired.provenance
-    if acquired.validation:
-        row.cue_count = acquired.validation.cue_count
-        row.coverage = acquired.validation.coverage
-
+    validation, provenance = deep_check(result, config)
+    row.level2 = validation.reason
+    row.provenance = provenance
+    row.cue_count = validation.cue_count
+    row.coverage = validation.coverage
     return row
+
+
+def deep_check(
+    result: MediaProbe, config: Config
+) -> tuple[Validation, Provenance]:
+    """
+    Prove whether an item has a usable transcript — without reading whole files.
+
+    Embedded tracks are SAMPLED (see subtitle_source.sample_track): a full
+    extraction demuxes the entire file, which across a library means hundreds of
+    gigabytes of reading and an evening of the machine sitting at 5% CPU and 30%
+    iowait.
+
+    Sidecars are validated in full, because they're already small text files
+    sitting on disk — there's nothing to save.
+
+    Whisper is never invoked. The audit reports what transcription WOULD cost;
+    it doesn't silently spend an hour of GPU time behind a progress bar.
+    """
+    worst: Validation | None = None
+
+    # -- embedded text streams, sampled --------------------------------
+    ranked = select_stream(
+        result.subtitle_streams, config.subtitles.preferred_languages
+    )
+    for stream in ranked:
+        if not result.duration:
+            # No runtime means no window positions and no coverage. Rare enough
+            # to simply report rather than fall back to a full read.
+            worst = Validation(False, Reason.PARSE_FAILED)
+            break
+
+        validation = sample_track(
+            result.path, stream.index, result.duration, config
+        )
+        if validation.ok:
+            return validation, Provenance.TEXT_EMBEDDED
+        worst = validation
+
+    # -- sidecars, validated in full -----------------------------------
+    for sidecar in result.sidecars:
+        destination = (
+            config.extracted_subs_dir / f"audit.{sidecar.path.stem}.srt"
+        )
+        if not convert_sidecar(sidecar.path, destination):
+            worst = worst or Validation(False, Reason.EXTRACT_FAILED)
+            continue
+
+        validation = validate_srt(destination, result.duration, config)
+        destination.unlink(missing_ok=True)
+        if validation.ok:
+            return validation, Provenance.TEXT_SIDECAR
+        worst = validation
+
+    if worst is not None:
+        return worst, Provenance.UNUSABLE
+
+    # Nothing text-based to try at all — the Level 1 verdict is the answer.
+    if result.image_streams and not result.text_streams:
+        return Validation(False, Reason.IMAGE_ONLY), Provenance.UNUSABLE
+    if not result.subtitle_streams and not result.sidecars:
+        return Validation(False, Reason.NO_SUB_STREAMS), Provenance.UNUSABLE
+    return Validation(False, Reason.NO_TEXT_TRACK), Provenance.UNUSABLE
 
 
 def audit_library(

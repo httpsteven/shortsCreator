@@ -175,6 +175,28 @@ def _parse_subtitle_stream(raw: dict) -> SubtitleStream:
     )
 
 
+# Directory listings are cached because a season folder is scanned once per
+# episode otherwise — 150 identical readdir calls over a FUSE/mergerfs mount,
+# which is slow in a way that doesn't show up on a local SSD.
+_DIR_CACHE: dict[Path, list[Path]] = {}
+
+
+def clear_directory_cache() -> None:
+    _DIR_CACHE.clear()
+
+
+def _list_directory(directory: Path) -> list[Path]:
+    cached = _DIR_CACHE.get(directory)
+    if cached is not None:
+        return cached
+    try:
+        entries = sorted(p for p in directory.iterdir() if p.is_file())
+    except OSError:
+        entries = []
+    _DIR_CACHE[directory] = entries
+    return entries
+
+
 def _find_sidecars(path: Path) -> list[Sidecar]:
     """
     Subtitle files sitting beside the media: "Movie.srt", "Movie.en.srt".
@@ -185,14 +207,7 @@ def _find_sidecars(path: Path) -> list[Sidecar]:
     found: list[Sidecar] = []
     stem = path.stem.lower()
 
-    try:
-        neighbours = list(path.parent.iterdir())
-    except OSError:
-        return found
-
-    for candidate in sorted(neighbours):
-        if not candidate.is_file():
-            continue
+    for candidate in _list_directory(path.parent):
         if candidate.suffix.lower() not in SIDECAR_EXTENSIONS:
             continue
 

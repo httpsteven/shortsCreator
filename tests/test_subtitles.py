@@ -266,3 +266,100 @@ def test_bad_override_fails_loudly_rather_than_falling_through(
 
     assert not result.ok
     assert result.reason is Reason.TOO_FEW_CUES
+
+
+# --------------------------------------------------------------------------
+# Sampled validation — the audit's deep path
+# --------------------------------------------------------------------------
+
+
+def test_sampled_audit_accepts_a_healthy_track(
+    media: dict[str, Path], config: Config
+) -> None:
+    from src.audit import deep_check
+
+    validation, provenance = deep_check(probe(media["with_text_subs"]), config)
+
+    assert validation.ok
+    assert provenance is Provenance.TEXT_EMBEDDED
+
+
+def test_sampled_audit_still_catches_the_forced_track(
+    media: dict[str, Path], config: Config
+) -> None:
+    """
+    The whole reason the deep audit exists.
+
+    Sampling reads a fraction of the file, so this proves the cheaper method
+    reaches the same verdict as a full extraction: a track carrying plenty of
+    cues and plenty of text, which simply stops a third of the way in.
+    """
+    from src.audit import deep_check
+
+    validation, provenance = deep_check(probe(media["forced_subs"]), config)
+
+    assert not validation.ok
+    assert validation.reason is Reason.LOW_COVERAGE_LIKELY_FORCED
+    assert validation.coverage < config.subtitles.min_coverage
+    assert provenance is Provenance.UNUSABLE
+
+
+def test_sampled_audit_reports_no_streams(
+    media: dict[str, Path], config: Config
+) -> None:
+    from src.audit import deep_check
+
+    validation, _ = deep_check(probe(media["no_subs"]), config)
+    assert validation.reason is Reason.NO_SUB_STREAMS
+
+
+def test_sampled_audit_uses_sidecars(
+    media: dict[str, Path], config: Config
+) -> None:
+    """Sidecars are small text files — validated in full, nothing to save."""
+    from src.audit import deep_check
+
+    validation, provenance = deep_check(probe(media["sidecar_movie"]), config)
+
+    assert validation.ok
+    assert provenance is Provenance.TEXT_SIDECAR
+
+
+def test_sampled_audit_prefers_english_stream(
+    media: dict[str, Path], config: Config
+) -> None:
+    from src.audit import deep_check
+
+    validation, provenance = deep_check(probe(media["multi_lang"]), config)
+
+    # The Spanish track is first in the file and is sparse; the English one is
+    # the healthy one. Picking the wrong stream would fail on cue count.
+    assert validation.ok
+    assert provenance is Provenance.TEXT_EMBEDDED
+
+
+def test_sampling_windows_do_not_overlap_on_short_media(
+    media: dict[str, Path], config: Config
+) -> None:
+    """
+    Overlapping windows would count the same cues repeatedly and make a sparse
+    track look dense — which would silently defeat the forced-track gate.
+    """
+    from src.subtitle_source import sample_starts, sample_track, sample_window
+
+    # Across every shape of media: a 2-minute fixture, a 22-minute episode and
+    # a 2-hour film.
+    for duration in (120.0, 1320.0, 7200.0):
+        window = sample_window(duration)
+        starts = sample_starts(duration)
+
+        for earlier, later in zip(starts, starts[1:]):
+            assert earlier + window <= later + 1e-6, f"overlap at {duration}s"
+
+        # And the last window must fit inside the file rather than being
+        # clamped backwards into its neighbour.
+        assert starts[-1] + window <= duration + 1e-6
+
+    # And it still reaches a verdict on real media.
+    result = sample_track(media["with_text_subs"], 2, duration, config)
+    assert result.reason in {Reason.OK, Reason.TOO_FEW_CUES}

@@ -457,3 +457,187 @@ def _cache_stem(media: Path) -> str:
     digest = hashlib.sha1(str(media.resolve()).encode()).hexdigest()[:10]
     safe = re.sub(r"[^A-Za-z0-9]+", "_", media.stem)[:60].strip("_")
     return f"{safe}.{digest}"
+
+
+# --------------------------------------------------------------------------
+# Sampled validation — for auditing a library without reading all of it
+# --------------------------------------------------------------------------
+
+# Extracting a subtitle track requires demuxing the WHOLE file. That is fine
+# once, for an item you're about to cut a clip from. It is not fine across a
+# library: 7,000 items on spinning disks is hundreds of gigabytes of reading,
+# and the machine sits at 5% CPU and 30% iowait for hours.
+#
+# So the audit judges a track from short probes instead. Seeking before the
+# input means ffmpeg reads only those regions.
+SAMPLE_FRACTIONS = (0.10, 0.30, 0.50, 0.70, 0.90)
+SAMPLE_SECONDS = 30.0
+
+
+def extract_stream_window(
+    media_path: Path, stream_index: int, destination: Path,
+    start: float, length: float,
+) -> bool:
+    """Extract one short span of a subtitle stream. `-ss` before `-i` seeks."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-ss", f"{start:.3f}",
+        "-i", str(media_path),
+        "-t", f"{length:.3f}",
+        "-map", f"0:{stream_index}?",
+        "-c:s", "srt",
+        str(destination),
+    ]
+    try:
+        result = subprocess.run(
+            command, capture_output=True, text=True, timeout=180, check=False
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and destination.exists()
+
+
+def _count_cues(srt_path: Path) -> tuple[int, int]:
+    """(cue count, alphabetic character count) for a small .srt."""
+    if not srt_path.exists() or srt_path.stat().st_size == 0:
+        return 0, 0
+    try:
+        subs = pysrt.open(
+            str(srt_path), encoding="utf-8", error_handling=pysrt.ERROR_PASS
+        )
+    except Exception:
+        return 0, 0
+
+    cues = [c for c in subs if clean_cue_text(c.text)]
+    chars = sum(
+        len(re.sub(r"[^A-Za-z]", "", clean_cue_text(c.text))) for c in cues
+    )
+    return len(cues), chars
+
+
+
+def sample_window(
+    duration: float,
+    fractions: tuple[float, ...] = SAMPLE_FRACTIONS,
+    window_seconds: float = SAMPLE_SECONDS,
+) -> float:
+    """
+    How long each probe window may be, so that none of them overlap.
+
+    Bounded by two things, and getting either wrong makes a sparse track look
+    dense — which would silently defeat the forced-track gate this whole check
+    exists for:
+
+      1. the gap between sample points, so windows never overlap each other;
+      2. what is left after the LAST sample point, so the final window doesn't
+         run past the end of the file and get clamped backwards into its
+         neighbour.
+    """
+    ordered = sorted(fractions)
+    smallest_gap = min((b - a for a, b in zip(ordered, ordered[1:])), default=1.0)
+    tail = 1.0 - ordered[-1]
+
+    return max(1.0, min(window_seconds, smallest_gap * duration, tail * duration))
+
+
+def sample_starts(
+    duration: float,
+    fractions: tuple[float, ...] = SAMPLE_FRACTIONS,
+    window_seconds: float = SAMPLE_SECONDS,
+) -> list[float]:
+    """Where each probe window begins, in seconds."""
+    window = sample_window(duration, fractions, window_seconds)
+    return [
+        max(0.0, min(duration - window, duration * fraction))
+        for fraction in sorted(fractions)
+    ]
+
+
+def sample_track(
+    media_path: Path,
+    stream_index: int,
+    duration: float,
+    config: Config,
+    *,
+    fractions: tuple[float, ...] = SAMPLE_FRACTIONS,
+    window_seconds: float = SAMPLE_SECONDS,
+) -> Validation:
+    """
+    Judge a subtitle track from a handful of short probes.
+
+    Reaches the same verdicts as a full extraction, from roughly a tenth of the
+    reading:
+
+    * cues nowhere            -> EMPTY_OUTPUT  (the image-based signature)
+    * cues only early on      -> LOW_COVERAGE_LIKELY_FORCED
+    * too little text overall -> TOO_LITTLE_TEXT
+    * sparse everywhere       -> TOO_FEW_CUES
+
+    Cue count is reported as an ESTIMATE, extrapolated from the sampled density.
+    That's honest about what it is: the audit answers "is this track usable",
+    and `make` does the real extraction for items it actually cuts.
+    """
+    window = sample_window(duration, fractions, window_seconds)
+
+    work_dir = config.extracted_subs_dir
+    stem = _cache_stem(media_path)
+
+    total_cues = 0
+    total_chars = 0
+    sampled_seconds = 0.0
+    last_fraction_with_cues: float | None = None
+
+    for fraction in fractions:
+        start = max(0.0, min(duration - window, duration * fraction))
+        destination = work_dir / f"{stem}.s{stream_index}.w{int(fraction * 100)}.srt"
+
+        if not extract_stream_window(
+            media_path, stream_index, destination, start, window
+        ):
+            continue
+
+        cues, chars = _count_cues(destination)
+        destination.unlink(missing_ok=True)
+
+        sampled_seconds += window
+        total_cues += cues
+        total_chars += chars
+        if cues:
+            last_fraction_with_cues = fraction
+
+    if sampled_seconds == 0:
+        return Validation(False, Reason.EXTRACT_FAILED)
+
+    # Extrapolate to the whole runtime so the thresholds stay comparable with a
+    # full extraction's numbers.
+    scale = duration / sampled_seconds
+    estimated_cues = int(round(total_cues * scale))
+    estimated_chars = int(round(total_chars * scale))
+
+    if total_cues == 0:
+        return Validation(False, Reason.EMPTY_OUTPUT, 0, 0, 0.0)
+
+    # Coverage proxy: how far into the file cues were still appearing. A forced
+    # track carries foreign-language lines only, so the later windows come back
+    # empty even though the earlier ones look perfectly healthy.
+    coverage = (last_fraction_with_cues or 0.0) + (window / duration)
+    coverage = min(coverage, 1.0)
+
+    if estimated_cues < config.subtitles.min_cues:
+        return Validation(
+            False, Reason.TOO_FEW_CUES, estimated_cues, estimated_chars, coverage
+        )
+
+    if estimated_chars < config.subtitles.min_chars:
+        return Validation(
+            False, Reason.TOO_LITTLE_TEXT, estimated_cues, estimated_chars, coverage
+        )
+
+    if coverage < config.subtitles.min_coverage:
+        return Validation(
+            False, Reason.LOW_COVERAGE_LIKELY_FORCED,
+            estimated_cues, estimated_chars, coverage,
+        )
+
+    return Validation(True, Reason.OK, estimated_cues, estimated_chars, coverage)
