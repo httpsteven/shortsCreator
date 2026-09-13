@@ -1,0 +1,53 @@
+# shortsCreator worker — drains the job queue the dashboard writes to.
+#
+#   sudo cp deploy/shorts-worker.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now shorts-worker
+#   journalctl -u shorts-worker -f
+#
+# Edit User, Group and the three paths below to match your box.
+
+[Unit]
+Description=shortsCreator worker
+Documentation=file:///opt/shortsCreator/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=CHANGEME
+Group=CHANGEME
+WorkingDirectory=/opt/shortsCreator
+ExecStart=/opt/shortsCreator/.venv/bin/python -m src.pipeline \
+          --config /opt/shortsCreator/config.yaml worker
+
+# faster-whisper downloads models under $HOME on first run. Without HOME set,
+# systemd gives the service /, the download fails, and the failure looks like a
+# CUDA problem rather than a permissions one.
+Environment=HOME=/home/CHANGEME
+Environment=PYTHONUNBUFFERED=1
+
+# Be a polite neighbour: this machine is also the Plex server. The worker sets
+# these per-subprocess too, but doing it at the unit level covers everything it
+# spawns, including Python's own CPU work during transcription.
+Nice=10
+IOSchedulingClass=idle
+
+# The worker is a long-running loop that idles between jobs; if it exits at all,
+# something went wrong.
+Restart=on-failure
+RestartSec=15
+
+# Modest hardening. Not a sandbox — it needs to read the library and write the
+# output directory — but it has no business writing anywhere else.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/srv/shorts_output /opt/shortsCreator /home/CHANGEME/.cache
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

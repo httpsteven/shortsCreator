@@ -1,0 +1,35 @@
+{
+  "_comment": [
+    "Both entry shapes are valid in the same file.",
+    "A LIST is a flat pool (movie-style). The same list serves single-clip mode",
+    "(best match wins) and --multipart (all matched, arranged chronologically).",
+    "A DICT is categorised (TV-style): --category pulls one bucket, omitting it",
+    "pools them all. Keys must match what `scan` reports; lookup falls back to a",
+    "normalized fuzzy match, so minor punctuation drift is tolerated.",
+    "Delete this _comment key in your real file."
+  ],
+
+  "The Empire Strikes Back": [
+    "No, I am your father.",
+    "Do or do not. There is no try.",
+    { "label": "The asteroid field", "quote": "Never tell me the odds." }
+  ],
+
+  "Heat": [
+    "A guy told me one time, don't let yourself get attached to anything you are not willing to walk out on in thirty seconds flat.",
+    "I do what I do best, I take scores."
+  ],
+
+  "Malcolm in the Middle - S01E03 - Home Alone 4": {
+    "dewey_chaos": [
+      "I am the smartest man alive!",
+      "This is my swamp now."
+    ],
+    "malcolm_normal": [
+      "I just want one normal day, is that too much to ask?"
+    ],
+    "hal_panic": [
+      "Nobody panic! I have a system."
+    ]
+  }
+}

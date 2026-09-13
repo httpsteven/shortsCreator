@@ -1,0 +1,30 @@
+# Per-show category definitions.
+#
+# Copy to categories.yaml. These descriptions are injected VERBATIM into the
+# prompts that scripts/export_titles.py generates, so they are what the model
+# actually reads when choosing quotes. Vague descriptions here are the single
+# biggest cause of bad quote selection downstream — "funny moments" produces
+# generic results; the examples below produce specific ones.
+#
+# The top-level key must match the show name as the pipeline parses it. Run
+# `python -m src.pipeline scan` to see exactly what those names are.
+
+Malcolm in the Middle:
+  dewey_chaos: >
+    Dewey acting unhinged, destructive, or delusionally grandiose — declaring
+    himself king of something, narrating his own schemes, or calmly causing a
+    disaster he takes no responsibility for.
+  malcolm_normal: >
+    Malcolm having a genuinely ordinary, un-dramatic moment — no scheming, no
+    fourth-wall address, just a kid reacting like anyone would.
+  hal_panic: >
+    Hal spiralling over something trivial, committing completely to a bad idea,
+    or confessing an oddly specific fear.
+
+The Bear:
+  kitchen_chaos: >
+    The kitchen coming apart — overlapping shouting, equipment failing, an
+    order going wrong under time pressure.
+  quiet_moment: >
+    A still, sincere exchange between two characters, usually away from
+    service, where someone says the thing they have been avoiding.

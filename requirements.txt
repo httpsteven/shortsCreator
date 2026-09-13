@@ -1,0 +1,13 @@
+# Core pipeline. Everything here is pure-Python or has universal wheels.
+rapidfuzz>=3.6          # token_sort_ratio for quote -> subtitle matching
+pysrt>=1.1.2            # .srt parsing (note: pysrt.ERROR_PASS, not ERROR_IGNORE)
+PyYAML>=6.0             # config.yaml
+
+# Optional — the Whisper fallback for media with no usable text subtitles.
+#
+#   pip install -r requirements-whisper.txt
+#
+# Kept out of the core list on purpose: faster-whisper pulls ctranslate2, whose
+# wheels lag new Python releases, and whose CUDA build additionally needs cuDNN
+# and cuBLAS present on the host. The rest of the pipeline must install and run
+# whether or not that succeeds.

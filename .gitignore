@@ -1,0 +1,21 @@
+# Secrets and machine-specific settings. The examples are committed.
+config.yaml
+categories.yaml
+quotes.json
+
+# Environments
+.venv/
+.deps/
+__pycache__/
+*.py[cod]
+
+# Generated media: fixtures are rebuilt by the test suite, output is produced.
+tests/fixtures/media/
+output/
+*.mp4
+*.jpg
+*.png
+
+# Caches
+.pytest_cache/
+.cache/

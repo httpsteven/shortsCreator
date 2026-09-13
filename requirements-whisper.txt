@@ -1,0 +1,6 @@
+-r requirements.txt
+
+# Transcription fallback. See preflight for what this needs from the host:
+# on the GTX 1080 box, a CUDA-enabled ctranslate2 plus matching cuDNN/cuBLAS.
+# Falls back to CPU cleanly when the GPU isn't usable.
+faster-whisper>=1.0.3

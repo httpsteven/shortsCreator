@@ -1,0 +1,155 @@
+# shortsCreator configuration.
+#
+# Copy to config.yaml and edit. Every section is optional — anything you leave
+# out falls back to the defaults shown here, so a minimal config is just the
+# `roots` and `output` blocks.
+
+roots:
+  movies: /srv/local_movies
+  tv: /srv/local_tvshows
+
+output:
+  # Finished .mp4 shorts, their thumbnails, and per-series sidecar JSON.
+  dir: /srv/shorts_output
+
+cache:
+  # Generated transcripts and extracted subtitle tracks. Safe to delete; it
+  # only costs re-transcription time.
+  dir: ~/.cache/shortscreator
+
+database:
+  # The dashboard contract. Point this at the Home Lab Dashboard's data/
+  # directory — that path is already a mounted, gitignored Docker volume, so
+  # the DB survives container redeploys without any compose change.
+  path: /opt/homelab-dashboard/data/shorts.db
+
+quotes:
+  path: quotes.json
+  categories: categories.yaml
+
+subtitles:
+  # Stream selection is language-aware rather than a hardcoded 0:s:0. The first
+  # language tag found wins; untagged text streams are tried next.
+  preferred_languages: [eng, en, english]
+
+  # Level-2 validation: a *listed* subtitle stream is not proof of a *usable*
+  # one, so an extracted track has to clear all of these before it's trusted.
+  min_cues: 20
+  min_chars: 500
+
+  # The gate that earns its keep. A "forced" track parses perfectly but only
+  # covers foreign-language lines — a handful of cues across a whole film. It
+  # would look healthy and match almost nothing. Requiring the last cue to land
+  # past the halfway mark catches exactly that case.
+  min_coverage: 0.5
+
+matching:
+  # rapidfuzz token_sort_ratio, 0-100, on normalized text. 72 is permissive
+  # enough to survive paraphrasing in hand-written quotes while still rejecting
+  # unrelated dialogue. Raise it if you get wrong-moment clips; lower it if too
+  # many titles are skipped.
+  threshold: 72
+
+  # Quotes rarely align to cue boundaries, so candidates are matched against
+  # sliding windows of 1..N consecutive cues joined together.
+  window_max_cues: 3
+
+clip:
+  min_duration: 20
+  max_duration: 60
+  # Breathing room around the matched line, applied before the duration clamp.
+  pad_before: 1.5
+  pad_after: 2.0
+
+video:
+  width: 1080
+  height: 1920
+  blur_sigma: 20
+
+  # libx264 is the quality default. h264_nvenc is much faster on the GTX 1080,
+  # at a small quality cost that matters little for clips YouTube re-encodes
+  # anyway. Note the blur and caption filters are CPU-only either way — gblur
+  # has no CUDA equivalent — so NVENC speeds up encoding, not filtering.
+  encoder: libx264       # or: h264_nvenc
+  crf: 18
+  preset: medium
+  nvenc_cq: 19
+  nvenc_preset: p5
+
+captions:
+  # ASS colors are &HAABBGGRR — alpha first, then BLUE GREEN RED. 00 alpha is
+  # fully opaque. This trips everyone up at least once.
+  font: Arial
+  font_size: 64
+  primary_colour: "&H00FFFFFF"   # white
+  outline_colour: "&H00000000"   # black
+  back_colour: "&H80000000"      # 50% black, only used when border_style: 3
+  bold: true
+  border_style: 1                # 1 = outline+shadow, 3 = opaque box
+  outline: 4                     # heavy, so it stays legible on any footage
+  shadow: 1
+  alignment: 2                   # 2 = bottom-center
+  margin_v: 320                  # lifts captions clear of the UI safe area
+  margin_l: 60
+  margin_r: 60
+
+part_badge:
+  # The "Part 2/4" marker on multipart series.
+  enabled: true
+  font: Arial
+  font_size: 44
+  primary_colour: "&H00FFFFFF"
+  outline_colour: "&H00000000"
+  outline: 3
+  shadow: 0
+  alignment: 9                   # 9 = top-right
+  margin_v: 90
+  margin_l: 50
+  margin_r: 50
+
+multipart:
+  min_parts: 3                   # below this, skip the title rather than ship a stub series
+  max_parts: 5
+  # Two quotes from the same scene would become two near-identical shorts.
+  # Matches closer together than this are clustered and only the best kept.
+  min_separation: 180
+
+whisper:
+  enabled: true
+  # distil-large-v3 is English-only, near large-v3 accuracy, far cheaper. Better
+  # transcription directly raises match rates, so this is worth the VRAM.
+  model: distil-large-v3
+  device: cuda                   # falls back to cpu automatically if unavailable
+
+  # NOT float16. Pascal (GTX 10xx) runs fp16 at 1/64 rate, so float16 on this
+  # card is dramatically SLOWER than integer math. Compute capability 6.1 does
+  # have fast int8 via DP4A, which is what this uses.
+  compute_type: int8_float32
+  cpu_compute_type: int8
+
+  beam_size: 5
+  vad_filter: true
+
+  # Transcription is chunked so it can be interrupted at a boundary when
+  # someone starts watching — see yield_to_viewers. Losing one chunk is
+  # acceptable; losing a two-hour transcription is not.
+  chunk_seconds: 600
+
+yield_to_viewers:
+  # Hard requirement, not a tuning knob: this box is also the Plex server, and
+  # pipeline work must never degrade someone's playback.
+  enabled: true
+  pause_on_any_stream: true      # any playback at all, not just transcodes
+  resume_after_idle: 300         # quiet period before work resumes (hysteresis:
+                                 # the gap between two episodes shouldn't restart
+                                 # heavy work)
+  heartbeat_stale_after: 60      # dashboard silent this long -> assume viewers,
+                                 # stay paused. Safe default is "someone might be
+                                 # watching".
+
+worker:
+  # The worker is deliberately serial: this box is also the Plex server on four
+  # shared cores, and a second concurrent render buys little while costing
+  # playback headroom. These are politeness settings, not throughput ones.
+  nice: 10                       # CPU priority for ffmpeg and whisper
+  ionice_class: 3                # I/O priority: 3 = idle (Linux only)
