@@ -402,3 +402,70 @@ def test_punchline_anchor_respects_both_duration_bounds(config: Config) -> None:
         assert window.duration <= config.clip.max_duration + 0.01
         assert window.start >= 0.0
         assert window.end <= 1320.0 + 0.01
+
+
+# --------------------------------------------------------------------------
+# Scene detection — not cutting into the middle of a shot
+# --------------------------------------------------------------------------
+
+
+def test_detects_real_shot_changes(media: dict[str, Path]) -> None:
+    """The fixture cuts between four unrelated patterns at 30s, 60s and 90s."""
+    from src.media_probe import detect_scene_changes
+
+    found = detect_scene_changes(media["scene_changes"], 0.0, 120.0)
+
+    assert [round(t) for t in found] == [30, 60, 90]
+
+
+def test_scene_search_is_bounded_to_the_window(media: dict[str, Path]) -> None:
+    """Only the span where a clip might start is decoded, never the episode."""
+    from src.media_probe import detect_scene_changes
+
+    found = detect_scene_changes(media["scene_changes"], 50.0, 75.0)
+
+    assert [round(t) for t in found] == [60]
+
+
+def test_a_shot_change_beats_a_dialogue_pause(config: Config) -> None:
+    """
+    A gap in the cues is a free proxy for a scene boundary and usually agrees
+    with one — but two characters can pause mid-scene. When they disagree, the
+    picture is what the viewer notices.
+    """
+    cues = dialogue(
+        (570.0, 572.0),
+        (576.0, 578.0),   # a 4s pause here — the best dialogue candidate
+        (578.5, 580.0),
+        (598.0, 600.0),
+        (600.0, 603.0),
+    )
+
+    window = plan_window(
+        make_match(600.0, 603.0), 1320.0, config,
+        cues=cues, scene_changes=[583.0],
+    )
+
+    assert window.start == pytest.approx(583.0)
+
+
+def test_falls_back_to_dialogue_when_no_shot_change_is_in_range(
+    config: Config,
+) -> None:
+    cues = dialogue((570.0, 572.0), (576.0, 578.0), (600.0, 603.0))
+
+    window = plan_window(
+        make_match(600.0, 603.0), 1320.0, config,
+        cues=cues, scene_changes=[120.0],  # real, but nowhere near the window
+    )
+
+    assert window.start == pytest.approx(576.0)
+
+
+def test_scene_detection_failure_does_not_lose_the_clip(config: Config) -> None:
+    """Detection is a nicety; a clip must still be produced without it."""
+    window = plan_window(
+        make_match(600.0, 603.0), 1320.0, config, cues=None, scene_changes=[]
+    )
+
+    assert config.clip.min_duration <= window.duration <= config.clip.max_duration

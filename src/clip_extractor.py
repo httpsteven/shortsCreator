@@ -39,6 +39,7 @@ def plan_window(
     media_duration: float | None,
     config: Config,
     cues: list | None = None,
+    scene_changes: list[float] | None = None,
 ) -> ClipWindow:
     """
     Turn a matched quote into a clip window.
@@ -63,7 +64,7 @@ def plan_window(
     upper = media_duration if media_duration else match.end + limits.pad_after
 
     if limits.anchor == "punchline":
-        return _plan_punchline(match, upper, config, cues)
+        return _plan_punchline(match, upper, config, cues, scene_changes)
 
     start = match.start - limits.pad_before
     end = match.end + limits.pad_after
@@ -80,7 +81,11 @@ def plan_window(
 
 
 def _plan_punchline(
-    match: Match, upper: float, config: Config, cues: list | None
+    match: Match,
+    upper: float,
+    config: Config,
+    cues: list | None,
+    scene_changes: list[float] | None = None,
 ) -> ClipWindow:
     """
     End just after the line, and take the setup from before it.
@@ -117,7 +122,9 @@ def _plan_punchline(
     # ...and must never be longer than the maximum.
     latest = max(latest, earliest)
 
-    start = _snap_to_pause(cues, earliest, latest, limits.boundary_gap)
+    start = _snap_to_boundary(
+        cues, scene_changes, earliest, latest, limits.boundary_gap
+    )
     if start is None:
         start = latest
 
@@ -127,6 +134,32 @@ def _plan_punchline(
         end = min(upper, start + limits.min_duration)
 
     return ClipWindow(start=round(start, 3), end=round(end, 3))
+
+
+def _snap_to_boundary(
+    cues: list | None,
+    scene_changes: list[float] | None,
+    earliest: float,
+    latest: float,
+    min_gap: float,
+) -> float | None:
+    """
+    Where to start, best evidence first.
+
+    A shot change beats a pause in the dialogue. A gap in the cues is a free
+    proxy for a scene boundary and usually agrees with one, but not always —
+    two characters can pause mid-scene, and a cut can land under continuous
+    speech. When they disagree, the picture is the thing the viewer notices.
+
+    The LATEST candidate wins in both cases: the tightest clip that still opens
+    cleanly. Reaching further back only buys dead air.
+    """
+    if scene_changes:
+        inside = [t for t in scene_changes if earliest <= t <= latest]
+        if inside:
+            return max(inside)
+
+    return _snap_to_pause(cues, earliest, latest, min_gap)
 
 
 def _snap_to_pause(

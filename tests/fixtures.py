@@ -234,4 +234,37 @@ def build_all(directory: Path) -> dict[str, Path]:
         "forced_subs": build_forced_subs(directory),
         "multi_lang": build_multi_lang(directory),
         "sidecar_movie": build_sidecar_movie(directory),
+        "scene_changes": build_scene_changes(directory),
     }
+
+
+def build_scene_changes(directory: Path) -> Path:
+    """
+    Four visually unrelated patterns back to back.
+
+    testsrc alone has no cuts in it — it is one continuous animation — so
+    detecting a shot change needs footage that actually changes shot. Cuts land
+    at 30s, 60s and 90s.
+    """
+    out = directory / "scene_changes.mkv"
+    if out.exists():
+        return out
+
+    patterns = ["testsrc", "smptebars", "rgbtestsrc", "testsrc2"]
+    inputs: list[str] = []
+    for pattern in patterns:
+        inputs += [
+            "-f", "lavfi",
+            "-i", f"{pattern}=duration=30:size={WIDTH}x{HEIGHT}:rate={FPS}",
+        ]
+
+    joined = "".join(f"[{i}:v]" for i in range(len(patterns)))
+    _run([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        *inputs,
+        "-filter_complex", f"{joined}concat=n={len(patterns)}:v=1:a=0[v]",
+        "-map", "[v]",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        str(out),
+    ])
+    return out

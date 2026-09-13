@@ -10,6 +10,7 @@ deliberately not trusted on its own. A declared stream is not a usable one;
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -255,3 +256,55 @@ def select_stream(
         return (group, 0 if stream.default else 1, stream.index)
 
     return sorted([s for s in streams if s.is_text], key=rank)
+
+
+# --------------------------------------------------------------------------
+# Scene detection
+# --------------------------------------------------------------------------
+
+_PTS = re.compile(r"pts_time:([0-9.]+)")
+
+
+def detect_scene_changes(
+    path: Path, start: float, end: float, *, threshold: float = 0.3
+) -> list[float]:
+    """
+    Absolute timestamps of shot changes within [start, end].
+
+    ffmpeg's `scene` metric scores how different each frame is from the last;
+    above the threshold is a cut. This is a real decode of the region, so it is
+    deliberately bounded — the caller asks about the few seconds where a clip
+    might begin, never a whole episode.
+
+    Dialogue gaps are a free proxy for a scene change and usually agree with
+    one, but not always: two characters can pause mid-scene, and a cut can land
+    under continuous speech. When they disagree, this is the one that's right
+    about where the picture changes.
+
+    Returns an empty list on any failure, so callers fall back rather than
+    losing a clip to a detection problem.
+    """
+    span = max(0.0, end - start)
+    if span <= 0:
+        return []
+
+    command = [
+        "ffmpeg", "-hide_banner", "-nostats",
+        "-ss", f"{start:.3f}", "-t", f"{span:.3f}", "-i", str(path),
+        "-vf", f"select='gt(scene,{threshold})',showinfo",
+        "-an", "-f", "null", "-",
+    ]
+    try:
+        result = subprocess.run(
+            command, capture_output=True, text=True, timeout=300, check=False
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+
+    if result.returncode != 0:
+        return []
+
+    # With -ss before -i the output timeline restarts at zero, so the reported
+    # times are relative to the seek point.
+    found = [start + float(match) for match in _PTS.findall(result.stderr or "")]
+    return sorted(t for t in found if start <= t <= end)

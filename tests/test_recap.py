@@ -345,3 +345,88 @@ def test_renders_a_compilation_from_two_different_files(
 
     assert (info["width"], info["height"]) == ("1080", "1920")
     assert float(info["duration"]) == pytest.approx(plan.duration, abs=1.0)
+
+
+# --------------------------------------------------------------------------
+# Transitions
+# --------------------------------------------------------------------------
+
+
+def test_dip_leaves_the_timeline_alone(config: Config, matches) -> None:
+    """
+    A dip fades each segment at both ends without overlapping its neighbours,
+    so offsets and total length are exactly what a hard cut would give — and
+    captions cannot drift.
+    """
+    config.recap.transition = "none"
+    plain = plan_recap(matches, config, runtime=120.0, target_duration=20.0)
+
+    config.recap.transition = "dip"
+    dipped = plan_recap(matches, config, runtime=120.0, target_duration=20.0)
+
+    assert [s.offset for s in plain.segments] == [s.offset for s in dipped.segments]
+    assert plain.duration == pytest.approx(dipped.duration)
+
+
+def test_crossfade_overlaps_and_shortens_the_total(config: Config, matches) -> None:
+    config.recap.transition = "crossfade"
+    config.recap.transition_duration = 0.5
+    plan = plan_recap(matches, config, runtime=120.0, target_duration=20.0)
+
+    count = len(plan.segments)
+    # Every join eats one transition's worth of runtime.
+    assert plan.duration == pytest.approx(20.0 - (count - 1) * 0.5, abs=0.05)
+
+    # And each segment starts a transition earlier than a plain running total.
+    for index, segment in enumerate(plan.segments):
+        expected = sum(s.duration for s in plan.segments[:index]) - index * 0.5
+        assert segment.offset == pytest.approx(expected, abs=0.01)
+
+
+def test_crossfade_offsets_measure_from_the_accumulated_stream(
+    config: Config,
+) -> None:
+    """
+    xfade's offset is relative to the start of the stream it is joining ONTO,
+    which grows by (duration - fade) each time, not by duration. Getting this
+    wrong makes the dissolves land in the wrong place and drift further with
+    every segment.
+    """
+    config.recap.transition = "crossfade"
+    config.recap.transition_duration = 0.35
+    chain = build_recap_filter(
+        3, Path("/tmp/x.ass"), config, with_audio=False, durations=[6.0, 6.0, 6.0]
+    )
+
+    assert "offset=5.650" in chain          # 6.0 - 0.35
+    assert "offset=11.300" in chain         # 6.0 + 6.0 - 0.35 - 0.35
+    assert "concat=" not in chain           # xfade replaces concat entirely
+
+
+def test_transition_modes_build_distinct_graphs(config: Config) -> None:
+    built = {}
+    for mode in ("none", "dip", "crossfade"):
+        config.recap.transition = mode
+        built[mode] = build_recap_filter(
+            3, Path("/tmp/x.ass"), config, with_audio=True, durations=[6.0] * 3
+        )
+
+    assert "fade=t=in" not in built["none"]
+    assert "xfade" not in built["none"]
+
+    assert built["dip"].count("fade=t=in") == 3
+    assert built["dip"].count("fade=t=out") == 3
+    assert "xfade" not in built["dip"]
+
+    assert built["crossfade"].count("xfade") == 2
+    assert built["crossfade"].count("acrossfade") == 2
+
+
+def test_single_segment_needs_no_transition(config: Config) -> None:
+    """One moment has nothing to cross to; the graph must not emit an xfade."""
+    config.recap.transition = "crossfade"
+    chain = build_recap_filter(
+        1, Path("/tmp/x.ass"), config, with_audio=False, durations=[6.0]
+    )
+
+    assert "xfade" not in chain

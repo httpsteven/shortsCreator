@@ -74,6 +74,11 @@ class Clip:
     # "previously on". 0 disables it.
     skip_first_seconds: float = 0.0
 
+    # Start clips at a real shot change rather than a pause in the dialogue.
+    # Costs a short decode of the few seconds where the clip might begin.
+    scene_detect: bool = True
+    scene_threshold: float = 0.3
+
 
 @dataclass
 class Video:
@@ -147,6 +152,18 @@ class Recap:
     segment_min: float = 4.0
     # Moments closer together than this are near-duplicates in a recap.
     min_separation: float = 20.0
+
+    # How one moment gives way to the next.
+    #   none      - hard cut
+    #   dip       - a quick fade through black (default)
+    #   crossfade - the two moments dissolve into each other
+    #
+    # dip is the default because a montage cuts between unrelated scenes, and
+    # dissolving two unrelated shots together reads as mush rather than as a
+    # transition. It also leaves the timeline untouched, so captions cannot
+    # drift; crossfade overlaps the segments and shortens the total.
+    transition: str = "dip"
+    transition_duration: float = 0.35
 
 
 @dataclass

@@ -84,6 +84,14 @@ clip:
   # scene.
   skip_first_seconds: 0
 
+  # Start clips at a real shot change rather than a pause in the dialogue.
+  # A dialogue gap is a free proxy for a scene boundary and usually agrees with
+  # one, but two characters can pause mid-scene and a cut can land under
+  # continuous speech — and it is the picture the viewer notices. Costs a short
+  # decode of only the span where the clip might begin, never the episode.
+  scene_detect: true
+  scene_threshold: 0.3        # higher = fewer, more definite cuts
+
 video:
   width: 1080
   height: 1920
@@ -161,6 +169,16 @@ recap:
   max_segments: 8
   segment_min: 4              # below this a segment is a flash, not a moment
   min_separation: 20          # moments closer than this are near-duplicates
+
+  # How one moment gives way to the next: none | dip | crossfade.
+  #
+  # dip is the default because a montage cuts between unrelated scenes, and
+  # dissolving two unrelated shots together reads as mush rather than as a
+  # transition. It also leaves the timeline untouched, so captions cannot
+  # drift; crossfade overlaps the segments and shortens the total by one
+  # transition per join.
+  transition: dip
+  transition_duration: 0.35
 
   # A recap picks the best moment from each ACT rather than the best N overall.
   # Ranking purely by score clusters wherever the strongest lines happen to

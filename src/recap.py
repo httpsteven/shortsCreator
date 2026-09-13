@@ -79,7 +79,17 @@ class RecapPlan:
 
     @property
     def duration(self) -> float:
-        return sum(segment.duration for segment in self.segments)
+        """
+        Length of the finished clip.
+
+        Measured from the last segment's position rather than by summing, since
+        a crossfade overlaps its neighbours and the sum would over-count every
+        overlap.
+        """
+        if not self.segments:
+            return 0.0
+        last = self.segments[-1]
+        return last.offset + last.duration
 
 
 def select_by_beats(moments: list[Moment], count: int, runtime: float) -> list[Moment]:
@@ -192,6 +202,14 @@ def plan_recap(
 
     each = total / len(chosen)
 
+    # A crossfade overlaps each pair, so every segment after the first starts
+    # earlier than the plain running total. Getting this wrong puts every
+    # caption after the first segment at the wrong moment — which is the whole
+    # reason the offset lives here rather than being recomputed at render time.
+    overlap = (
+        settings.transition_duration if settings.transition == "crossfade" else 0.0
+    )
+
     built: list[Segment] = []
     offset = 0.0
     for index, moment in enumerate(chosen, start=1):
@@ -201,7 +219,9 @@ def plan_recap(
         start = max(0.0, end - each)
 
         window = ClipWindow(start=round(start, 3), end=round(end, 3))
-        built.append(Segment(index=index, moment=moment, window=window, offset=offset))
-        offset += window.duration
+        built.append(
+            Segment(index=index, moment=moment, window=window, offset=round(offset, 3))
+        )
+        offset += window.duration - overlap
 
     return RecapPlan(segments=built, considered=len(moments))

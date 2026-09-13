@@ -335,7 +335,12 @@ def has_audio_stream(path: Path) -> bool:
 
 
 def build_recap_filter(
-    segment_count: int, ass_path: Path, config: Config, *, with_audio: bool
+    segment_count: int,
+    ass_path: Path,
+    config: Config,
+    *,
+    with_audio: bool,
+    durations: list[float] | None = None,
 ) -> str:
     """
     Compose N segments into one vertical clip, then burn captions over the lot.
@@ -349,9 +354,27 @@ def build_recap_filter(
     aspect ratios disagree, and seeking into different parts of a file can
     report them differently.
     """
+    durations = durations or [0.0] * segment_count
+    settings = config.recap
+    fade = settings.transition_duration
+    dipping = settings.transition == "dip" and fade > 0
+    crossfading = settings.transition == "crossfade" and fade > 0
+
     parts: list[str] = []
     for index in range(segment_count):
-        parts.append(composite_chain(index, config, f"v{index}"))
+        label = f"v{index}" if not dipping else f"raw{index}"
+        parts.append(composite_chain(index, config, label))
+
+        if dipping:
+            # A quick fade through black at both ends of every segment. This
+            # leaves the timeline untouched — no overlap, no shifted offsets —
+            # so captions stay exactly where the planner put them.
+            length = durations[index]
+            parts.append(
+                f"[raw{index}]fade=t=in:st=0:d={fade:.3f},"
+                f"fade=t=out:st={max(0.0, length - fade):.3f}:d={fade:.3f}"
+                f"[v{index}];"
+            )
         if with_audio:
             # Normalised so concat never sees a format change mid-stream.
             parts.append(
@@ -359,7 +382,33 @@ def build_recap_filter(
                 f"channel_layouts=stereo[a{index}];"
             )
 
-    if with_audio:
+    if crossfading and segment_count > 1:
+        # xfade joins two streams at a time, and its offset is measured from
+        # the start of the accumulated stream — which grows by
+        # (duration - fade) each time, not by duration.
+        accumulated = durations[0]
+        current = "v0"
+        for index in range(1, segment_count):
+            target = f"x{index}"
+            parts.append(
+                f"[{current}][v{index}]xfade=transition=fade:"
+                f"duration={fade:.3f}:offset={max(0.0, accumulated - fade):.3f}"
+                f"[{target}];"
+            )
+            accumulated += durations[index] - fade
+            current = target
+
+        if with_audio:
+            audio = "a0"
+            for index in range(1, segment_count):
+                target = f"ax{index}"
+                parts.append(f"[{audio}][a{index}]acrossfade=d={fade:.3f}[{target}];")
+                audio = target
+            parts.append(f"[{current}]copy[cv];[{audio}]acopy[ca];")
+        else:
+            parts.append(f"[{current}]copy[cv];")
+
+    elif with_audio:
         joined = "".join(f"[v{i}][a{i}]" for i in range(segment_count))
         parts.append(f"{joined}concat=n={segment_count}:v=1:a=1[cv][ca];")
     else:
@@ -430,7 +479,10 @@ def render_recap(
 
     command += [
         "-filter_complex",
-        build_recap_filter(len(segments), ass_path, config, with_audio=with_audio),
+        build_recap_filter(
+            len(segments), ass_path, config, with_audio=with_audio,
+            durations=[segment.duration for segment in segments],
+        ),
         "-map", "[out]",
     ]
     if with_audio:

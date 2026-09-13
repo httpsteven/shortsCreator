@@ -18,7 +18,7 @@ from pathlib import Path
 from src.caption_renderer import extract_thumbnail, render, render_recap
 from src.clip_extractor import plan_window
 from src.config import Config
-from src.media_probe import ProbeError, probe
+from src.media_probe import ProbeError, detect_scene_changes, probe
 from src.quote_finder import Candidate, QuoteStore
 from src.recap import Moment, plan_recap
 from src.segmenter import Part, plan_series
@@ -161,7 +161,10 @@ def produce(
         identifier = series_id(item.path, [p.match.quote for p in planned])
     else:
         best = max(accepted, key=lambda m: m.score)
-        window = plan_window(best, probed.duration, config, cues)
+        # Only the span where the clip might begin is decoded, never the whole
+        # episode: at most max_duration - min_duration seconds of video.
+        scenes = _scene_changes_for(item.path, best, probed.duration, config)
+        window = plan_window(best, probed.duration, config, cues, scenes)
         planned = [Part(index=1, total=1, match=best, window=window)]
         identifier = None
 
@@ -213,6 +216,34 @@ def produce(
         _write_series_sidecar(item, outcome.produced, config)
 
     return outcome
+
+
+
+def _scene_changes_for(
+    source: Path, match: Match, media_duration: float | None, config: Config
+) -> list[float] | None:
+    """
+    Shot changes in the span where this clip could start.
+
+    Bounded deliberately. The legal start range is at most
+    max_duration - min_duration seconds wide, so this decodes a few tens of
+    seconds rather than a whole episode.
+    """
+    if not config.clip.scene_detect:
+        return None
+
+    limits = config.clip
+    upper = media_duration or (match.end + limits.pad_after)
+    end = min(upper, match.end + limits.pad_after)
+
+    earliest = max(0.0, end - limits.max_duration)
+    latest = max(0.0, min(end - limits.min_duration, match.start))
+    if latest <= earliest:
+        return None
+
+    return detect_scene_changes(
+        source, earliest, latest, threshold=limits.scene_threshold
+    )
 
 
 def _record(
