@@ -35,21 +35,35 @@ class ClipWindow:
 
 
 def plan_window(
-    match: Match, media_duration: float | None, config: Config
+    match: Match,
+    media_duration: float | None,
+    config: Config,
+    cues: list | None = None,
 ) -> ClipWindow:
     """
     Turn a matched quote into a clip window.
 
-    Padding first, then clamping to the configured duration range. The match
-    itself is kept inside the window wherever possible — a clip that cuts away
-    before the line finishes is worse than one that runs slightly long.
+    Two modes, set by `clip.anchor`:
 
-    When the media is shorter than `min_duration` the whole file is returned:
-    there is nothing else to give, and failing here would reject short content
-    for a reason the user can't act on.
+    **punchline** (default) — the matched line lands near the END, with the
+    preceding dialogue running into it. This is the one that makes clips make
+    sense. A quote is almost always the line that LANDS, not the line that sets
+    it up, so a clip should play setup then payoff and stop. Padding the match
+    symmetrically instead puts the punchline in the middle and then runs on
+    into whatever unrelated conversation follows, which is how you get a clip
+    that is technically correct and completely pointless.
+
+    **center** — the old behaviour, kept for quotes that are the beginning of
+    something rather than the end of it.
+
+    When `cues` are supplied the start is snapped to a gap in the dialogue, so
+    the clip opens on a natural beat rather than halfway through a sentence.
     """
     limits = config.clip
     upper = media_duration if media_duration else match.end + limits.pad_after
+
+    if limits.anchor == "punchline":
+        return _plan_punchline(match, upper, config, cues)
 
     start = match.start - limits.pad_before
     end = match.end + limits.pad_after
@@ -63,6 +77,97 @@ def plan_window(
         start, end = _shrink(start, end, match, limits.max_duration)
 
     return ClipWindow(start=round(start, 3), end=round(end, 3))
+
+
+def _plan_punchline(
+    match: Match, upper: float, config: Config, cues: list | None
+) -> ClipWindow:
+    """
+    End just after the line, and take the setup from before it.
+
+    The end is fixed first — the quote plus a short beat to let it land — and
+    the start is then whatever gives a legal duration, preferring a point where
+    the dialogue actually pauses.
+    """
+    limits = config.clip
+    match_length = match.end - match.start
+
+    # A "quote" longer than the maximum clip has no room for setup. Keep the
+    # BEGINNING of the line: opening mid-sentence is worse than ending early,
+    # and the start is the part that makes sense without context.
+    if match_length >= limits.max_duration:
+        start = match.start
+        return ClipWindow(
+            start=round(start, 3),
+            end=round(min(upper, start + limits.max_duration), 3),
+        )
+
+    # Media shorter than the minimum clip: give back all of it. Failing here
+    # would reject short content for a reason nobody can act on.
+    if upper <= limits.min_duration:
+        return ClipWindow(start=0.0, end=round(upper, 3))
+
+    end = min(upper, match.end + limits.pad_after)
+
+    # The legal range for a start, working backwards from a fixed end.
+    earliest = max(0.0, end - limits.max_duration)
+    latest = max(0.0, end - limits.min_duration)
+    # A clip must contain its own quote...
+    latest = min(latest, match.start)
+    # ...and must never be longer than the maximum.
+    latest = max(latest, earliest)
+
+    start = _snap_to_pause(cues, earliest, latest, limits.boundary_gap)
+    if start is None:
+        start = latest
+
+    # Not enough room before the line — near the start of the file, say. Take
+    # the remainder from after it rather than shipping an under-length clip.
+    if end - start < limits.min_duration:
+        end = min(upper, start + limits.min_duration)
+
+    return ClipWindow(start=round(start, 3), end=round(end, 3))
+
+
+def _snap_to_pause(
+    cues: list | None, earliest: float, latest: float, min_gap: float
+) -> float | None:
+    """
+    Find the best place to start inside [earliest, latest].
+
+    Candidates are cue starts preceded by a pause. A gap in the dialogue is the
+    cheapest available proxy for a scene change or a beat, and it costs nothing
+    because the cues are already parsed.
+
+    The LATEST qualifying pause wins, not the longest. The aim is the tightest
+    clip that still opens cleanly — reaching further back for a bigger pause
+    just buys dead air, and the longest gap in range is often an artifact
+    anyway (the run-up to the first line of an episode measures as an enormous
+    one). If more setup is wanted, that's what `min_duration` is for.
+
+    Returns None when there's nothing to snap to, leaving the caller to fall
+    back to a plain duration-based start.
+    """
+    if not cues:
+        return None
+
+    chosen: float | None = None
+    previous_end = 0.0
+
+    for index, cue in enumerate(cues):
+        gap = cue.start - previous_end
+        previous_end = max(previous_end, cue.end)
+
+        # The first cue has no real predecessor; the "gap" in front of it is
+        # measured from zero and means nothing.
+        if index == 0:
+            continue
+        if cue.start < earliest or cue.start > latest:
+            continue
+        if gap >= min_gap:
+            chosen = cue.start
+
+    return chosen
 
 
 def _clamp(start: float, end: float, lower: float, upper: float) -> tuple[float, float]:
@@ -115,7 +220,6 @@ def _shrink(
     if match_length >= target:
         return match.start, match.start + target
 
-    # Centre the matched span in the allowed length.
     slack = target - match_length
     new_start = match.start - slack / 2.0
     new_end = new_start + target

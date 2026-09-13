@@ -57,9 +57,32 @@ matching:
 clip:
   min_duration: 20
   max_duration: 60
-  # Breathing room around the matched line, applied before the duration clamp.
   pad_before: 1.5
+  # How long to hold after the matched line, so it has room to land.
   pad_after: 2.0
+
+  # Where the matched line sits in the finished clip.
+  #
+  #   punchline - the line lands near the END, with the dialogue that leads up
+  #               to it running in front. This is the default because a quote is
+  #               almost always the line that LANDS, not the one that sets it
+  #               up. Centring it instead puts the payoff in the middle and then
+  #               runs on into unrelated conversation.
+  #   center    - the old behaviour, for quotes that open something rather than
+  #               close it.
+  anchor: punchline
+
+  # Clips start at a gap in the dialogue at least this long, so they open on a
+  # beat instead of halfway through someone's sentence. The latest qualifying
+  # pause wins: the tightest clip that still opens cleanly.
+  boundary_gap: 0.8
+
+  # Ignore matches that land in the first N seconds — opening credits, recaps,
+  # "previously on". Footage under a title card makes a useless clip however
+  # good the line is. Per-library, so start at 0 and raise it if you see credit
+  # text in your output; ~150 suits a sitcom whose titles run over the first
+  # scene.
+  skip_first_seconds: 0
 
 video:
   width: 1080

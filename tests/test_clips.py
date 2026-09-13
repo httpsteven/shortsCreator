@@ -279,3 +279,81 @@ def test_rendered_captions_are_shifted_into_clip_time(
         hours, minutes, seconds = start.split(":")
         offset = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
         assert offset <= window.duration + 0.5
+
+
+# --------------------------------------------------------------------------
+# Punchline anchoring — where the quote sits in the finished clip
+# --------------------------------------------------------------------------
+
+
+def dialogue(*spans: tuple[float, float]) -> list[Cue]:
+    return [Cue(i, s, e, f"line {i}") for i, (s, e) in enumerate(spans)]
+
+
+def test_quote_lands_at_the_end_not_the_middle(config: Config) -> None:
+    """
+    A quote is almost always the line that LANDS, not the line that sets it up.
+    Padding it symmetrically puts the punchline in the middle and then runs on
+    into unrelated conversation — technically correct, editorially pointless.
+    """
+    window = plan_window(make_match(600.0, 603.0), media_duration=1320.0, config=config)
+
+    # The clip ends just after the line, not ~9 seconds later.
+    assert window.end == pytest.approx(603.0 + config.clip.pad_after)
+    # And the line sits in the last fifth of the clip.
+    position = (603.0 - window.start) / window.duration
+    assert position > 0.8
+
+
+def test_start_snaps_to_a_pause_in_the_dialogue(config: Config) -> None:
+    """Clips should open on a beat, not halfway through someone's sentence."""
+    cues = dialogue(
+        (570.0, 572.0),   # ...then a 4s pause, the natural place to start
+        (576.0, 578.0),
+        (578.5, 580.0),
+        (580.2, 582.0),
+        (598.0, 600.0),
+        (600.0, 603.0),   # the quote
+    )
+
+    window = plan_window(
+        make_match(600.0, 603.0), media_duration=1320.0, config=config, cues=cues
+    )
+
+    assert window.start == pytest.approx(576.0)
+
+
+def test_falls_back_cleanly_without_cues(config: Config) -> None:
+    a = plan_window(make_match(600.0, 603.0), 1320.0, config)
+    b = plan_window(make_match(600.0, 603.0), 1320.0, config, cues=[])
+
+    assert a == b
+    assert config.clip.min_duration <= a.duration <= config.clip.max_duration
+
+
+def test_a_pause_is_ignored_if_it_would_break_the_duration_limits(
+    config: Config,
+) -> None:
+    """A huge gap far too early must not produce a 200-second clip."""
+    cues = dialogue((10.0, 12.0), (400.0, 402.0), (600.0, 603.0))
+
+    window = plan_window(make_match(600.0, 603.0), 1320.0, config, cues=cues)
+
+    assert window.duration <= config.clip.max_duration
+    assert window.start >= 603.0 + config.clip.pad_after - config.clip.max_duration
+
+
+def test_centre_anchor_still_available(config: Config) -> None:
+    config.clip.anchor = "center"
+    window = plan_window(make_match(600.0, 603.0), 1320.0, config)
+
+    position = (603.0 - window.start) / window.duration
+    assert position < 0.8  # not pinned to the end any more
+
+
+def test_punchline_anchor_respects_both_duration_bounds(config: Config) -> None:
+    for start in (5.0, 50.0, 600.0, 1300.0):
+        window = plan_window(make_match(start, start + 3.0), 1320.0, config)
+        assert window.duration <= config.clip.max_duration + 0.01
+        assert window.start >= 0.0
+        assert window.end <= 1320.0 + 0.01

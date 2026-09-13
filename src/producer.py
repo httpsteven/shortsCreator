@@ -111,6 +111,23 @@ def produce(
     )
     outcome.near_misses = rejected
 
+    # Opening credits, recaps and "previously on" produce clips that are
+    # technically correct and visually useless — the footage is under a title
+    # card. Dropping matches that land there is cruder than detecting credits,
+    # but it costs nothing and it is the user's own call per library.
+    if config.clip.skip_first_seconds > 0:
+        before = len(accepted)
+        accepted = [
+            m for m in accepted if m.start >= config.clip.skip_first_seconds
+        ]
+        dropped = before - len(accepted)
+        if dropped and not accepted:
+            outcome.skipped = (
+                f"all {dropped} match(es) fell inside the first "
+                f"{config.clip.skip_first_seconds:g}s (credits/recap)"
+            )
+            return outcome
+
     if not accepted:
         best = max((m.score for m in rejected), default=0.0)
         outcome.skipped = (
@@ -123,7 +140,7 @@ def produce(
     if multipart:
         plan = plan_series(
             accepted, probed.duration, config,
-            requested_parts=parts, labels=labels,
+            requested_parts=parts, labels=labels, cues=cues,
         )
         if not plan.ok:
             outcome.skipped = plan.reason
@@ -132,7 +149,7 @@ def produce(
         identifier = series_id(item.path, [p.match.quote for p in planned])
     else:
         best = max(accepted, key=lambda m: m.score)
-        window = plan_window(best, probed.duration, config)
+        window = plan_window(best, probed.duration, config, cues)
         planned = [Part(index=1, total=1, match=best, window=window)]
         identifier = None
 

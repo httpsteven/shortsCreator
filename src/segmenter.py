@@ -86,6 +86,7 @@ def plan_series(
     *,
     requested_parts: int | None = None,
     labels: dict[str, str] | None = None,
+    cues: list | None = None,
 ) -> SeriesPlan:
     """
     Build a series from already-accepted matches.
@@ -121,7 +122,7 @@ def plan_series(
 
     # Matched time is the ordering authority, not the order in quotes.json.
     ordered = sorted(kept, key=lambda m: m.start)
-    windows = [plan_window(match, media_duration, config) for match in ordered]
+    windows = [plan_window(m, media_duration, config, cues) for m in ordered]
     windows = resolve_overlaps(windows)
 
     total = len(ordered)

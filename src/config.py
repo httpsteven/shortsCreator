@@ -59,6 +59,21 @@ class Clip:
     pad_before: float = 1.5
     pad_after: float = 2.0
 
+    # Where the matched line sits in the finished clip.
+    #   "punchline" — the line lands near the END, with setup running into it.
+    #   "center"    — the line sits in the middle (the old behaviour).
+    # Punchline is the default because that is what a quote usually IS: you
+    # write down the line that lands, not the line that sets it up.
+    anchor: str = "punchline"
+
+    # A start is snapped to a gap in the dialogue at least this long, so clips
+    # begin at a natural beat instead of halfway through someone's sentence.
+    boundary_gap: float = 0.8
+
+    # Ignore matches starting before this point — opening credits, recaps,
+    # "previously on". 0 disables it.
+    skip_first_seconds: float = 0.0
+
 
 @dataclass
 class Video:
