@@ -302,6 +302,9 @@ def cmd_make(config: Config, args: argparse.Namespace) -> int:
                 category=args.category,
                 multipart=args.multipart,
                 parts=args.parts,
+                recap=args.recap,
+                recap_duration=args.recap_duration,
+                recap_segments=args.recap_segments,
                 dry_run=args.dry_run,
                 transcriber=transcriber,
                 force=args.force,
@@ -457,6 +460,13 @@ def build_parser() -> argparse.ArgumentParser:
     make.add_argument("--category", help="pull quotes from one category bucket")
     make.add_argument("--multipart", action="store_true",
                       help="split each title into a multi-part series")
+    make.add_argument("--recap", action="store_true",
+                      help="one clip cutting between several moments — a "
+                           "rundown rather than a single joke")
+    make.add_argument("--recap-duration", type=float,
+                      help="target recap length in seconds (default 45)")
+    make.add_argument("--recap-segments", type=int,
+                      help="how many moments to cut between")
     make.add_argument("--parts", type=int,
                       help="cap the series length for this run")
     make.add_argument("--count", type=int,

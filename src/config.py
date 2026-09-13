@@ -130,6 +130,19 @@ class Multipart:
 
 
 @dataclass
+class Recap:
+    """A single clip that stitches several moments into a rundown."""
+
+    duration: float = 45.0
+    min_segments: int = 4
+    max_segments: int = 8
+    # Below this a segment is a flash rather than a moment.
+    segment_min: float = 4.0
+    # Moments closer together than this are near-duplicates in a recap.
+    min_separation: float = 20.0
+
+
+@dataclass
 class Whisper:
     enabled: bool = True
     model: str = "distil-large-v3"
@@ -181,6 +194,7 @@ class Config:
     captions: CaptionStyle = field(default_factory=CaptionStyle)
     part_badge: PartBadgeStyle = field(default_factory=PartBadgeStyle)
     multipart: Multipart = field(default_factory=Multipart)
+    recap: Recap = field(default_factory=Recap)
     whisper: Whisper = field(default_factory=Whisper)
     yield_to_viewers: YieldToViewers = field(default_factory=YieldToViewers)
     worker: Worker = field(default_factory=Worker)
@@ -271,6 +285,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     top_level = {
         "roots", "output", "cache", "database", "quotes", "subtitles",
         "matching", "clip", "video", "captions", "part_badge", "multipart",
+        "recap",
         "whisper", "yield_to_viewers", "worker",
     }
     unknown = set(raw) - top_level
@@ -302,6 +317,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         captions=_build(CaptionStyle, raw.get("captions"), "captions"),
         part_badge=_build(PartBadgeStyle, raw.get("part_badge"), "part_badge"),
         multipart=_build(Multipart, raw.get("multipart"), "multipart"),
+        recap=_build(Recap, raw.get("recap"), "recap"),
         whisper=_build(Whisper, raw.get("whisper"), "whisper"),
         yield_to_viewers=_build(
             YieldToViewers, raw.get("yield_to_viewers"), "yield_to_viewers"

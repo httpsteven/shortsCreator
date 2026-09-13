@@ -137,6 +137,17 @@ multipart:
   # Matches closer together than this are clustered and only the best kept.
   min_separation: 180
 
+recap:
+  # A recap is ONE clip that cuts between several moments — a rundown of an
+  # episode rather than a single joke. Segments are a fixed length and are not
+  # snapped to pauses: a montage cuts hard by convention, and a fixed length
+  # keeps the total predictable, so a 45-second recap comes out at 45 seconds.
+  duration: 45
+  min_segments: 4
+  max_segments: 8
+  segment_min: 4              # below this a segment is a flash, not a moment
+  min_separation: 20          # moments closer than this are near-duplicates
+
 whisper:
   enabled: true
   # distil-large-v3 is English-only, near large-v3 accuracy, far cheaper. Better

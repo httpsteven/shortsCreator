@@ -261,3 +261,150 @@ def extract_thumbnail(
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
     return result.returncode == 0 and destination.exists()
+
+
+# --------------------------------------------------------------------------
+# Recaps — several moments stitched into one clip
+# --------------------------------------------------------------------------
+
+
+def has_audio_stream(path: Path) -> bool:
+    """Whether a file carries audio, so the concat graph knows what to join."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=index", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=60, check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return bool(result.stdout.strip())
+
+
+def build_recap_filter(
+    segment_count: int, ass_path: Path, config: Config, *, with_audio: bool
+) -> str:
+    """
+    Compose N segments into one vertical clip, then burn captions over the lot.
+
+    Each segment gets the same blur-fill treatment a standalone clip does, then
+    they are concatenated and the caption track is applied ONCE, across the
+    joined timeline. Applying it per segment instead would mean N subtitle
+    files and N chances for the offsets to drift apart.
+
+    setsar=1 on every segment matters: concat refuses inputs whose sample
+    aspect ratios disagree, and seeking into different parts of a file can
+    report them differently.
+    """
+    width, height = config.video.width, config.video.height
+    blur = config.video.blur_sigma
+
+    parts: list[str] = []
+    for index in range(segment_count):
+        parts.append(
+            f"[{index}:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
+            f"crop={width}:{height},gblur=sigma={blur}[bg{index}];"
+            f"[{index}:v]scale={width}:-2[fg{index}];"
+            f"[bg{index}][fg{index}]overlay=(W-w)/2:(H-h)/2,setsar=1[v{index}];"
+        )
+        if with_audio:
+            # Normalised so concat never sees a format change mid-stream.
+            parts.append(
+                f"[{index}:a]aformat=sample_fmts=fltp:sample_rates=48000:"
+                f"channel_layouts=stereo[a{index}];"
+            )
+
+    if with_audio:
+        joined = "".join(f"[v{i}][a{i}]" for i in range(segment_count))
+        parts.append(f"{joined}concat=n={segment_count}:v=1:a=1[cv][ca];")
+    else:
+        joined = "".join(f"[v{i}]" for i in range(segment_count))
+        parts.append(f"{joined}concat=n={segment_count}:v=1:a=0[cv];")
+
+    parts.append(f"[cv]ass='{escape_filter_path(ass_path)}'[out]")
+    return "".join(parts)
+
+
+def render_recap(
+    source: Path,
+    segments,
+    cues_by_segment: list[list[Cue]],
+    destination: Path,
+    config: Config,
+    *,
+    ass_path: Path | None = None,
+    gate=None,
+) -> tuple[bool, str]:
+    """
+    Render a recap: one file, several moments, one caption track.
+
+    `cues_by_segment` holds each segment's cues already rebased to that
+    segment's own start. They are shifted again here by the segment's offset in
+    the finished clip, which is the only place that knows the output timeline.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    shifted: list[Cue] = []
+    for segment, cues in zip(segments, cues_by_segment):
+        for cue in cues:
+            shifted.append(
+                Cue(
+                    index=len(shifted),
+                    start=cue.start + segment.offset,
+                    end=min(cue.end + segment.offset,
+                            segment.offset + segment.duration),
+                    text=cue.text,
+                )
+            )
+
+    total = sum(segment.duration for segment in segments)
+
+    ass_path = ass_path or destination.with_suffix(".ass")
+    ass_path.parent.mkdir(parents=True, exist_ok=True)
+    ass_path.write_text(
+        build_ass(shifted, config, clip_duration=total), encoding="utf-8"
+    )
+
+    with_audio = has_audio_stream(source)
+
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
+    for segment in segments:
+        command += [
+            "-ss", f"{segment.window.start:.3f}",
+            "-t", f"{segment.duration:.3f}",
+            "-i", str(source),
+        ]
+
+    command += [
+        "-filter_complex",
+        build_recap_filter(len(segments), ass_path, config, with_audio=with_audio),
+        "-map", "[out]",
+    ]
+    if with_audio:
+        command += ["-map", "[ca]", "-c:a", "aac", "-b:a", "160k"]
+
+    command += [
+        *encoder_args(config),
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        str(destination),
+    ]
+
+    try:
+        result = run_pausable(
+            command, gate, timeout=3600,
+            nice=config.worker.nice, ionice_class=config.worker.ionice_class,
+        )
+    except FileNotFoundError:
+        return False, "ffmpeg not found on PATH"
+    except subprocess.TimeoutExpired:
+        return False, "ffmpeg timed out while rendering the recap"
+
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip().splitlines()
+        return False, detail[-1] if detail else f"ffmpeg exited {result.returncode}"
+
+    if not destination.exists() or destination.stat().st_size == 0:
+        return False, "ffmpeg reported success but produced no output"
+
+    return True, "ok"

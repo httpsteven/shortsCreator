@@ -15,11 +15,12 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from src.caption_renderer import extract_thumbnail, render
+from src.caption_renderer import extract_thumbnail, render, render_recap
 from src.clip_extractor import plan_window
 from src.config import Config
 from src.media_probe import ProbeError, probe
 from src.quote_finder import Candidate, QuoteStore
+from src.recap import plan_recap
 from src.segmenter import Part, plan_series
 from src.sources.base import MediaItem
 from src.state import ClipRecord, State, clip_id, series_id
@@ -57,6 +58,9 @@ def produce(
     gate=None,
     override: Path | None = None,
     force_whisper: bool = False,
+    recap: bool = False,
+    recap_duration: float | None = None,
+    recap_segments: int | None = None,
 ) -> Outcome:
     outcome = Outcome(item=item)
 
@@ -137,6 +141,14 @@ def produce(
         return outcome
 
     # -- 4. arrange into clips --------------------------------------------
+    if recap:
+        return _produce_recap(
+            item, config, state, outcome, accepted, cues, probed.duration,
+            subtitles, categories,
+            target_duration=recap_duration, segments=recap_segments,
+            dry_run=dry_run, force=force, gate=gate,
+        )
+
     if multipart:
         plan = plan_series(
             accepted, probed.duration, config,
@@ -259,6 +271,131 @@ def _write_series_sidecar(
                         "file": Path(record.output).name,
                     }
                     for record in sorted(records, key=lambda r: r.part_index or 0)
+                ],
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _produce_recap(
+    item: MediaItem,
+    config: Config,
+    state: State,
+    outcome: Outcome,
+    accepted: list[Match],
+    cues,
+    media_duration: float | None,
+    subtitles,
+    categories: dict[str, str | None],
+    *,
+    target_duration: float | None,
+    segments: int | None,
+    dry_run: bool,
+    force: bool,
+    gate,
+) -> Outcome:
+    """
+    One clip that cuts between several moments — a rundown rather than a joke.
+    """
+    plan = plan_recap(
+        accepted, media_duration, config,
+        target_duration=target_duration, segments=segments,
+    )
+    if not plan.ok:
+        outcome.skipped = plan.reason
+        return outcome
+
+    # Identity covers every moment, so adding a quote produces a new recap
+    # rather than silently colliding with the old one.
+    identity = clip_id(item.path, "|".join(s.match.quote for s in plan.segments))
+    if not force and identity in state.clips:
+        outcome.already_done = 1
+        return outcome
+
+    destination = config.clips_dir / f"{item.slug} - Recap.mp4"
+
+    record = ClipRecord(
+        clip_id=identity,
+        source=str(item.path),
+        lookup_key=item.lookup_key,
+        quote=" / ".join(s.match.quote[:40] for s in plan.segments),
+        category=None,
+        # The output timeline, not the source: a 45-second recap drawn from a
+        # 22-minute episode should report 45 seconds, not 22 minutes.
+        start=0.0,
+        end=round(plan.duration, 3),
+        score=round(sum(s.match.score for s in plan.segments) / len(plan.segments), 1),
+        output=str(destination),
+        provenance=str(subtitles.provenance),
+    )
+
+    if dry_run:
+        outcome.produced.append(record)
+        _report_recap(plan)
+        return outcome
+
+    cues_by_segment = [
+        cues_in_window(cues, s.window.start, s.window.end) for s in plan.segments
+    ]
+
+    ok, message = render_recap(
+        item.path, plan.segments, cues_by_segment, destination, config,
+        ass_path=config.cache_dir / "ass" / f"{item.slug}.recap.ass",
+        gate=gate,
+    )
+    if not ok:
+        outcome.skipped = f"recap render failed: {message}"
+        return outcome
+
+    thumbnail = config.thumbs_dir / f"{item.slug} - Recap.jpg"
+    if extract_thumbnail(destination, thumbnail):
+        record.thumbnail = str(thumbnail)
+
+    state.record(record)
+    outcome.produced.append(record)
+    _write_recap_sidecar(item, plan, config)
+    return outcome
+
+
+def _report_recap(plan) -> None:
+    print(f"         recap: {len(plan.segments)} moment(s), {plan.duration:.1f}s")
+    for segment in plan.segments:
+        print(
+            f"           {segment.offset:5.1f}s  <- source "
+            f"{segment.window.start:7.1f}-{segment.window.end:<7.1f} "
+            f"score {segment.match.score:3.0f}  {segment.match.quote[:44]}"
+        )
+
+
+def _write_recap_sidecar(item: MediaItem, plan, config: Config) -> None:
+    """
+    Where each moment came from.
+
+    The clip itself reports its own 45-second timeline, so this is the only
+    record of which parts of the episode it was drawn from.
+    """
+    destination = config.output_dir / f"{item.slug}.recap.json"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        json.dumps(
+            {
+                "title": item.display_name,
+                "lookup_key": item.lookup_key,
+                "source": str(item.path),
+                "duration": round(plan.duration, 3),
+                "segments": [
+                    {
+                        "index": s.index,
+                        "at": round(s.offset, 3),
+                        "source_start": s.window.start,
+                        "source_end": s.window.end,
+                        "quote": s.match.quote,
+                        "match_score": s.match.score,
+                    }
+                    for s in plan.segments
                 ],
             },
             indent=2,
