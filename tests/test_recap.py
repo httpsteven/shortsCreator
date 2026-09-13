@@ -118,8 +118,10 @@ def test_filter_graph_joins_every_segment(config: Config) -> None:
     chain = build_recap_filter(3, Path("/tmp/x.ass"), config, with_audio=True)
 
     assert "concat=n=3:v=1:a=1" in chain
-    # setsar on each: concat refuses inputs whose aspect ratios disagree.
-    assert chain.count("setsar=1") == 3
+    # setsar on the panel and again after the overlay, for each segment:
+    # concat refuses inputs whose aspect ratios disagree, and seeking into
+    # different parts of a file can report them differently.
+    assert chain.count("setsar=1") == 6
     # Captions applied once, over the joined timeline.
     assert chain.count("ass=") == 1
 

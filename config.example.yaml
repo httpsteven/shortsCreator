@@ -89,6 +89,20 @@ video:
   height: 1920
   blur_sigma: 20
 
+  # Aspect ratio of the sharp centre panel. The source is CROPPED to fill it,
+  # so 4:5 from a 16:9 original loses roughly half the frame width in exchange
+  # for a much larger subject — which is the trade this format wants, since a
+  # full-width 16:9 strip on a phone is a small picture surrounded by blur.
+  #
+  # 4:5   tall panel, heavy side crop (default)
+  # 1:1   square, heavier crop still
+  # 16:9  no crop at all, smallest picture
+  # null  fit the full width and crop nothing (the original behaviour)
+  #
+  # Wide establishing shots suffer most from the crop; dialogue, which is what
+  # a quote-driven clip is made of, is usually centre-framed and survives fine.
+  foreground_aspect: "4:5"
+
   # libx264 is the quality default. h264_nvenc is much faster on the GTX 1080,
   # at a small quality cost that matters little for clips YouTube re-encodes
   # anyway. Note the blur and caption filters are CPU-only either way — gblur

@@ -80,6 +80,13 @@ class Video:
     width: int = 1080
     height: int = 1920
     blur_sigma: float = 20.0
+
+    # Aspect ratio of the sharp centre panel, as "W:H". The source is cropped
+    # to fill it, so 4:5 from a 16:9 original loses about half the frame width
+    # in exchange for a much larger subject — which is the trade the format
+    # wants, since a full-width 16:9 strip on a phone is a small picture
+    # surrounded by blur. Set to null to fit the full width and crop nothing.
+    foreground_aspect: str | None = "4:5"
     encoder: str = "libx264"
     crf: int = 18
     preset: str = "medium"

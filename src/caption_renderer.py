@@ -145,6 +145,66 @@ def escape_filter_path(path: Path) -> str:
     return text
 
 
+def foreground_size(config: Config) -> tuple[int, int] | None:
+    """
+    Pixel size of the sharp centre panel, or None to fit the full width.
+
+    Height is forced even — libx264 rejects odd dimensions, and the failure
+    surfaces as an encoder error with no obvious connection to the aspect
+    ratio you typed.
+    """
+    raw = (config.video.foreground_aspect or "").strip()
+    if not raw:
+        return None
+
+    try:
+        left, right = raw.replace("/", ":").split(":")
+        ratio_w, ratio_h = float(left), float(right)
+        if ratio_w <= 0 or ratio_h <= 0:
+            return None
+    except ValueError:
+        return None
+
+    width = config.video.width
+    height = int(round(width * ratio_h / ratio_w))
+    height -= height % 2
+    # A panel taller than the canvas is just a full-frame crop.
+    return width, min(height, config.video.height)
+
+
+def composite_chain(index: int, config: Config, out_label: str) -> str:
+    """
+    Blur-fill composition for one input: blurred cover behind, sharp panel in
+    front, centred.
+
+    The background is scaled UP and cropped to fill the whole canvas, then
+    blurred. The foreground is the part you actually watch — cropped to
+    `foreground_aspect` when one is set, otherwise scaled to fit the full width.
+    """
+    width, height = config.video.width, config.video.height
+    blur = config.video.blur_sigma
+    panel = foreground_size(config)
+
+    if panel:
+        panel_w, panel_h = panel
+        foreground = (
+            f"[{index}:v]scale={panel_w}:{panel_h}:"
+            f"force_original_aspect_ratio=increase,"
+            f"crop={panel_w}:{panel_h},setsar=1[fg{index}];"
+        )
+    else:
+        # scale=W:-2, not -1: the -2 forces an EVEN height. Odd dimensions are
+        # rejected by libx264 with an error that points nowhere near here.
+        foreground = f"[{index}:v]scale={width}:-2,setsar=1[fg{index}];"
+
+    return (
+        f"[{index}:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},gblur=sigma={blur}[bg{index}];"
+        f"{foreground}"
+        f"[bg{index}][fg{index}]overlay=(W-w)/2:(H-h)/2,setsar=1[{out_label}];"
+    )
+
+
 def build_filter_chain(ass_path: Path, config: Config) -> str:
     """
     Blur-fill vertical composition, then burned-in captions.
@@ -159,16 +219,9 @@ def build_filter_chain(ass_path: Path, config: Config) -> str:
     are rejected by libx264, and the failure appears as an encoder error with no
     obvious connection to the scale filter.
     """
-    width, height = config.video.width, config.video.height
-    blur = config.video.blur_sigma
-    escaped = escape_filter_path(ass_path)
-
     return (
-        f"[0:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
-        f"crop={width}:{height},gblur=sigma={blur}[bg];"
-        f"[0:v]scale={width}:-2[fg];"
-        f"[bg][fg]overlay=(W-w)/2:(H-h)/2[base];"
-        f"[base]ass='{escaped}'[out]"
+        composite_chain(0, config, "base")
+        + f"[base]ass='{escape_filter_path(ass_path)}'[out]"
     )
 
 
@@ -296,17 +349,9 @@ def build_recap_filter(
     aspect ratios disagree, and seeking into different parts of a file can
     report them differently.
     """
-    width, height = config.video.width, config.video.height
-    blur = config.video.blur_sigma
-
     parts: list[str] = []
     for index in range(segment_count):
-        parts.append(
-            f"[{index}:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
-            f"crop={width}:{height},gblur=sigma={blur}[bg{index}];"
-            f"[{index}:v]scale={width}:-2[fg{index}];"
-            f"[bg{index}][fg{index}]overlay=(W-w)/2:(H-h)/2,setsar=1[v{index}];"
-        )
+        parts.append(composite_chain(index, config, f"v{index}"))
         if with_audio:
             # Normalised so concat never sees a format change mid-stream.
             parts.append(

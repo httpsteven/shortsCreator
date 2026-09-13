@@ -213,16 +213,61 @@ def test_filter_path_escaping() -> None:
     assert escape_filter_path(Path("/tmp/a:b/c.ass")) == r"/tmp/a\:b/c.ass"
 
 
-def test_filter_chain_uses_even_height_scale(config: Config) -> None:
+def test_filter_chain_composes_blur_behind_a_cropped_panel(
+    config: Config,
+) -> None:
+    """The default 4:5 panel is cropped to fill, not fitted to the width."""
+    chain = build_filter_chain(Path("/tmp/x.ass"), config)
+
+    assert "gblur" in chain
+    assert "overlay=(W-w)/2:(H-h)/2" in chain
+    assert "scale=1080:1350:force_original_aspect_ratio=increase" in chain
+    assert "crop=1080:1350" in chain
+
+
+def test_filter_chain_uses_even_height_scale_when_uncropped(
+    config: Config,
+) -> None:
     """
-    "-2" not "-1": the height must be EVEN. Odd dimensions are rejected by
-    libx264 with an error that points nowhere near the scale filter.
+    With no panel aspect the source fits the full width, and the height must be
+    EVEN — "-2" not "-1". Odd dimensions are rejected by libx264 with an error
+    that points nowhere near the scale filter.
     """
+    config.video.foreground_aspect = None
     chain = build_filter_chain(Path("/tmp/x.ass"), config)
 
     assert f"scale={config.video.width}:-2" in chain
-    assert "gblur" in chain
-    assert "overlay=(W-w)/2:(H-h)/2" in chain
+
+
+def test_panel_height_is_always_even(config: Config) -> None:
+    from src.caption_renderer import foreground_size
+
+    for aspect in ("4:5", "16:9", "3:4", "1:1", "5:7"):
+        config.video.foreground_aspect = aspect
+        width, height = foreground_size(config)
+        assert height % 2 == 0, f"{aspect} gave an odd height"
+        assert width == config.video.width
+
+
+def test_panel_is_clamped_to_the_canvas(config: Config) -> None:
+    """A panel taller than the frame is just a full-frame crop."""
+    from src.caption_renderer import foreground_size
+
+    config.video.foreground_aspect = "9:16"
+    assert foreground_size(config) == (1080, 1920)
+
+    config.video.foreground_aspect = "1:4"
+    assert foreground_size(config)[1] <= config.video.height
+
+
+def test_unparseable_aspect_falls_back_rather_than_crashing(
+    config: Config,
+) -> None:
+    from src.caption_renderer import foreground_size
+
+    for bad in ("nonsense", "4:0", "", "   ", "-1:5"):
+        config.video.foreground_aspect = bad
+        assert foreground_size(config) is None
 
 
 # --------------------------------------------------------------------------
