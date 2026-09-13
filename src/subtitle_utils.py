@@ -208,3 +208,71 @@ def cues_in_window(cues: list[Cue], start: float, end: float) -> list[Cue]:
         )
 
     return shifted
+
+
+# --------------------------------------------------------------------------
+# Structure: finding the theme song, and therefore the cold open
+# --------------------------------------------------------------------------
+
+# Subtitles mark sung lines with a music glyph, and which glyph varies even
+# between episodes of one show — Malcolm's first season uses "*" in some rips
+# and "♪" in others.
+_MUSIC_GLYPH = re.compile(r"^\s*[♪♫*#]")
+
+# Instrumental themes have no lyrics to mark, but usually carry a description.
+_MUSIC_NOTE = re.compile(
+    r"^\s*[\[(][^\])]*\b(music|theme|song|singing|sings|playing)\b",
+    re.IGNORECASE,
+)
+
+
+def is_music_cue(text: str) -> bool:
+    """Whether a cue is sung or describes music rather than carrying dialogue."""
+    cleaned = clean_cue_text(text)
+    return bool(_MUSIC_GLYPH.match(cleaned) or _MUSIC_NOTE.match(cleaned))
+
+
+def find_theme_start(
+    cues: list[Cue],
+    *,
+    search_seconds: float = 400.0,
+    min_run: int = 3,
+    min_start: float = 15.0,
+) -> float | None:
+    """
+    Where the theme song begins — and therefore where the cold open ends.
+
+    Found by looking for the first RUN of consecutive music cues. A run rather
+    than a single cue because one sung line can appear in dialogue (a character
+    humming, a radio in the background); several in a row is a title sequence.
+
+    This matters because cold opens are not a fixed length. Across three
+    episodes of one show the theme started at 37s, 72s and 129s — so a fixed
+    cutoff either swallows the first act or truncates the cold open right
+    before its punchline.
+
+    `min_start` guards against an episode that opens on a song. `search_seconds`
+    keeps a mid-episode musical number from being mistaken for a title sequence
+    in a show that has no theme at all.
+
+    Returns None when no run is found, leaving the caller to fall back rather
+    than silently treating the whole episode as a cold open.
+    """
+    run = 0
+    run_start: float | None = None
+
+    for cue in cues:
+        if cue.start > search_seconds:
+            break
+
+        if is_music_cue(cue.text):
+            if run == 0:
+                run_start = cue.start
+            run += 1
+            if run >= min_run and run_start is not None and run_start >= min_start:
+                return run_start
+        else:
+            run = 0
+            run_start = None
+
+    return None

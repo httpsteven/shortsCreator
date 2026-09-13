@@ -194,3 +194,92 @@ def test_cues_straddling_the_edge_are_clamped_not_dropped(tmp_path: Path) -> Non
 
 def test_normalize_strips_subtitle_artifacts() -> None:
     assert normalize("<i>DEWEY:</i> [DOOR SLAMS] I am the king!") == "i am the king"
+
+
+# --------------------------------------------------------------------------
+# Structure: the theme song, and therefore the cold open
+# --------------------------------------------------------------------------
+
+
+def music(start: float, text: str) -> tuple[float, str]:
+    return (start, text)
+
+
+def build(rows: list[tuple[float, str]]):
+    from src.subtitle_utils import Cue
+
+    return [Cue(i, s, s + 2.0, t) for i, (s, t) in enumerate(rows)]
+
+
+def test_theme_is_found_whatever_glyph_the_rip_uses() -> None:
+    """Malcolm's first season uses "*" in some rips and "♪" in others."""
+    from src.subtitle_utils import find_theme_start
+
+    asterisk = build([
+        (2.0, "MALCOLM: This is the world--"), (34.6, "At some point, it stops."),
+        (37.0, "* Yes, no, maybe"), (40.7, "* I don't know"),
+        (42.7, "* Can you repeat the question?"),
+    ])
+    glyph = build([
+        (14.4, "What'd you do?"), (68.2, "Either she's losing her touch"),
+        (72.0, "♪ Yes, no, maybe"), (76.2, "♪ I don't know"),
+        (78.6, "♪ Can you repeat the question?"),
+    ])
+
+    assert find_theme_start(asterisk) == pytest.approx(37.0)
+    assert find_theme_start(glyph) == pytest.approx(72.0)
+
+
+def test_cold_opens_are_not_a_fixed_length() -> None:
+    """
+    The reason detection exists at all: across three episodes of one show the
+    theme starts at 37s, 72s and 129s. Any fixed cutoff is wrong for two of
+    them.
+    """
+    from src.subtitle_utils import find_theme_start
+
+    late = build([
+        (3.1, "And then there's a big explosion"), (7.5, "(laughing)"),
+        (99.3, "What do you think you're doing?"), (126.5, "Yep, this is a good dinner."),
+        (129.5, "* Yes, no, maybe"), (133.1, "* I don't know"),
+        (135.6, "* Can you repeat the question?"),
+    ])
+
+    assert find_theme_start(late) == pytest.approx(129.5)
+
+
+def test_sound_effects_are_not_mistaken_for_music() -> None:
+    from src.subtitle_utils import find_theme_start, is_music_cue
+
+    assert not is_music_cue("(laughing)")
+    assert not is_music_cue("(squeaking)")
+    assert not is_music_cue("MALCOLM: This is the world--")
+    assert is_music_cue("(gentle music playing)")
+
+    assert find_theme_start(build([
+        (2.0, "(squeaking)"), (5.0, "(laughing)"), (9.0, "(door slams)"),
+    ])) is None
+
+
+def test_a_single_sung_line_is_not_a_title_sequence() -> None:
+    """A character humming, or a radio — one line is not a theme."""
+    from src.subtitle_utils import find_theme_start
+
+    assert find_theme_start(build([
+        (20.0, "♪ la la la"), (24.0, "Would you stop that?"),
+        (28.0, "Never."),
+    ])) is None
+
+
+def test_an_episode_opening_on_a_song_is_not_truncated() -> None:
+    """min_start guards the case where the cold open itself is musical."""
+    from src.subtitle_utils import find_theme_start
+
+    rows = build([
+        (1.0, "♪ opening number"), (3.0, "♪ still singing"), (5.0, "♪ and again"),
+        (40.0, "Dialogue resumes."),
+        (80.0, "* Yes, no, maybe"), (84.0, "* I don't know"),
+        (88.0, "* Can you repeat the question?"),
+    ])
+
+    assert find_theme_start(rows) == pytest.approx(80.0)

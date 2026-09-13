@@ -427,7 +427,9 @@ def cmd_compile(config: Config, args: argparse.Namespace) -> int:
     from src.recap import Moment, plan_recap
     from src.state import ClipRecord, clip_id
     from src.subtitle_source import HUMAN_REASONS, acquire
-    from src.subtitle_utils import cues_in_window, find_matches, load_cues
+    from src.subtitle_utils import (
+        cues_in_window, find_matches, find_theme_start, load_cues,
+    )
 
     items = collect_items(config, args)
     if not items:
@@ -450,6 +452,8 @@ def cmd_compile(config: Config, args: argparse.Namespace) -> int:
     moments: list[Moment] = []
     cues_by_source: dict[Path, list] = {}
     scanned = 0
+    windowed_out = 0
+    no_theme = 0
 
     print(f"  Scanning {len(items)} item(s) for moments...")
     for item in items:
@@ -480,14 +484,27 @@ def cmd_compile(config: Config, args: argparse.Namespace) -> int:
             window_max_cues=config.matching.window_max_cues,
         )
 
-        # A time window is how you target the cold open — everything before the
-        # theme song — without needing to detect the theme itself.
+        before_window = len(accepted)
+
+        # Cold opens are not a fixed length — across three episodes of one show
+        # the theme started at 37s, 72s and 129s — so a fixed cutoff either
+        # swallows the first act or truncates the cold open before its
+        # punchline. Find the theme instead.
+        if args.cold_open:
+            theme = find_theme_start(cues)
+            if theme is None:
+                no_theme += 1
+                continue
+            accepted = [m for m in accepted if m.start < theme]
+
         if args.after is not None:
             accepted = [m for m in accepted if m.start >= args.after]
         if args.before is not None:
             accepted = [m for m in accepted if m.start <= args.before]
 
         if not accepted:
+            if before_window:
+                windowed_out += before_window
             continue
 
         cues_by_source[item.path] = cues
@@ -504,6 +521,20 @@ def cmd_compile(config: Config, args: argparse.Namespace) -> int:
 
     if not moments:
         print(f"\n  No moments found across {scanned} item(s) with quotes.")
+        # A time filter silently removing everything looks identical to quotes
+        # that simply didn't match, so say which it was.
+        if windowed_out:
+            print(
+                f"  {windowed_out} match(es) were excluded by the time window. "
+                f"Quotes for a cold open have to come from the cold open."
+            )
+        if no_theme:
+            print(f"  {no_theme} item(s) had no detectable theme song.")
+        if scanned <= 1:
+            print(
+                "  Only one item had quotes at all — a compilation needs "
+                "quotes across many episodes."
+            )
         return 1
 
     plan = plan_recap(
@@ -670,8 +701,10 @@ def build_parser() -> argparse.ArgumentParser:
     compile_.add_argument("--after", type=float,
                           help="ignore moments before this second")
     compile_.add_argument("--before", type=float,
-                          help="ignore moments after this second — "
-                               "e.g. --before 90 for cold opens")
+                          help="ignore moments after this second")
+    compile_.add_argument("--cold-open", action="store_true",
+                          help="only moments before the theme song, detected "
+                               "per episode rather than assumed")
     compile_.add_argument("--dry-run", action="store_true")
     compile_.add_argument("--quiet", action="store_true")
     compile_.add_argument("--ignore-viewers", action="store_true")
